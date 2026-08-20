@@ -11,6 +11,7 @@ import type { ImageReplacePathRequest } from "../../../packages/contracts/genera
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesExportRequest } from "../../../packages/contracts/generated/NotesExportRequest";
 import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
+import type { PageSummary } from "../../../packages/contracts/generated/PageSummary";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
 import type { SyncAttachment } from "../../../packages/contracts/generated/SyncAttachment";
 import type { SyncStatus } from "../../../packages/contracts/generated/SyncStatus";
@@ -29,6 +30,7 @@ import type {
 
 export interface NotesApi {
   bootstrap(): Promise<BootSnapshot>;
+  pages(): Promise<PageSummary[]>;
   queryViewport(request: ViewportRequest): Promise<ViewportPage>;
   queryForest(request: ForestRequest): Promise<ForestSnapshot>;
   execute(envelope: CommandEnvelope): Promise<MutationReceipt>;
@@ -62,6 +64,7 @@ export interface NotesApi {
 
 export const tauriNotesApi: NotesApi = {
   bootstrap: () => invoke("notes_bootstrap"),
+  pages: () => invoke("notes_pages"),
   queryViewport: (request) => invoke("notes_query_viewport", { request }),
   queryForest: (request) => invoke("notes_query_forest", { request }),
   execute: (envelope) => invoke("notes_execute", { envelope }),

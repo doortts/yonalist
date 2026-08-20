@@ -48,12 +48,12 @@ fn anchor_sql() -> String {
     )
 }
 
-pub(crate) fn bootstrap(
-    connection: &Connection,
-    session_id: String,
-    viewport_limit: u32,
-) -> Result<BootSnapshot, StorageError> {
-    let revision = repository::revision(connection)?;
+/// A page is a live child of the root and nothing else, which is why this
+/// asks the parent index rather than reading the root's window: that window
+/// carries the whole forest depth first and stops at a row limit, so a page
+/// with enough children of its own would push the pages after it out of the
+/// answer.
+pub(crate) fn pages(connection: &Connection) -> Result<Vec<PageSummary>, StorageError> {
     let mut statement = connection
         .prepare(
             "SELECT id, text, sort_key
@@ -73,6 +73,16 @@ pub(crate) fn bootstrap(
         .map_err(internal)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(internal)?;
+    Ok(pages)
+}
+
+pub(crate) fn bootstrap(
+    connection: &Connection,
+    session_id: String,
+    viewport_limit: u32,
+) -> Result<BootSnapshot, StorageError> {
+    let revision = repository::revision(connection)?;
+    let pages = pages(connection)?;
     let preferred_page = active_page(connection)?;
     // Home is a page like any other, so it is both the fallback and a legal
     // stored value; anything else has to still name a live page.

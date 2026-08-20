@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
-    ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, SyncAttachment, SyncChanged, SyncConflict, SyncStatus, SyncVaultFolderState,
-    UnusedAssetsReport, VaultRebuildReport, ViewportPage, ViewportRequest,
+    ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, PageSummary,
+    SearchPage, SearchQuery, SyncAttachment, SyncChanged, SyncConflict, SyncStatus,
+    SyncVaultFolderState, UnusedAssetsReport, VaultRebuildReport, ViewportPage, ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
@@ -75,6 +75,16 @@ async fn notes_bootstrap(state: State<'_, DesktopState>) -> Result<BootSnapshot,
             .storage
             .bootstrap(runtime.session_id.clone(), 80)
             .map_err(NotesError::from)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn notes_pages(state: State<'_, DesktopState>) -> Result<Vec<PageSummary>, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        let runtime = gate.wait()?;
+        runtime.storage.pages().map_err(NotesError::from)
     })
     .await
 }
@@ -960,6 +970,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             notes_bootstrap,
+            notes_pages,
             notes_query_viewport,
             notes_query_forest,
             notes_execute,

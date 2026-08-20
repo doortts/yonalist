@@ -74,6 +74,7 @@ export function receipt(text: string): MutationReceipt {
 export function appApi(): NotesApi {
   return {
     bootstrap: vi.fn().mockResolvedValue(snapshot),
+    pages: vi.fn().mockResolvedValue(snapshot.pages),
     queryViewport: vi.fn(),
     queryForest: vi.fn().mockImplementation(async (request) => ({
       revision: snapshot.revision,

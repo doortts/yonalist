@@ -3,6 +3,7 @@ import type { MutationReceipt } from "../../../packages/contracts/generated/Muta
 import type { CommandEnvelope } from "../../../packages/contracts/generated/CommandEnvelope";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
+import type { ViewportRequest } from "../../../packages/contracts/generated/ViewportRequest";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import { NotesStore } from "./notesStore";
 import { parseSingleTag, planTagEdits } from "./outline/outlineTagEdits";
@@ -1622,25 +1623,18 @@ describe("다른 기기의 변경 흡수", () => {
   it("보고 있는 페이지와 페이지 목록을 다시 읽는다", async () => {
     // Home now holds a page this window has never heard of, and the page it
     // is looking at gained a row.
-    const store = new NotesStore(
-      api(async (request) =>
-        request.pageId === "root"
-          ? {
-              pageId: "root",
-              anchorId: null,
-              beforeCursor: null,
-              afterCursor: null,
-              nodes: [page("page-1", "Today"), page("page-2", "Made there")]
-            }
-          : {
-              pageId: "page-1",
-              anchorId: null,
-              beforeCursor: null,
-              afterCursor: null,
-              nodes: [bullet("three", 3072)]
-            }
-      )
-    );
+    const notes = api(async () => ({
+      pageId: "page-1",
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: [bullet("three", 3072)]
+    }));
+    notes.pages = vi.fn().mockResolvedValue([
+      { id: "page-1", title: "Today", sortKey: 1_024 },
+      { id: "page-2", title: "Made there", sortKey: 2_048 }
+    ]);
+    const store = new NotesStore(notes);
     await store.bootstrap();
 
     await store.absorbVaultChange();
@@ -1652,32 +1646,19 @@ describe("다른 기기의 변경 흡수", () => {
     expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["three"]);
   });
 
-  it("페이지 목록에 페이지 아래 줄은 올리지 않는다", async () => {
-    // 루트를 읽으면 그 아래 전부가 경로 순서로 온다. 페이지는 루트의 직계
-    // 자식뿐이니, 페이지 안의 줄까지 목록에 올리면 사이드바가 남의 줄로 찬다.
-    const store = new NotesStore(
-      api(async (request) =>
-        request.pageId === "root"
-          ? {
-              pageId: "root",
-              anchorId: null,
-              beforeCursor: null,
-              afterCursor: null,
-              nodes: [
-                page("page-1", "Today"),
-                bullet("nested", 2048),
-                page("page-2", "Made there")
-              ]
-            }
-          : {
-              pageId: "page-1",
-              anchorId: null,
-              beforeCursor: null,
-              afterCursor: null,
-              nodes: [bullet("nested", 2048)]
-            }
-      )
-    );
+  it("페이지 목록은 루트 뷰포트를 읽지 않는다", async () => {
+    // 루트 창은 하위 트리 전체를 행 수 제한까지만 실어 오고, 읽는 김에
+    // 마지막으로 연 페이지까지 루트로 바꿔 놓는다. 목록은 자기 질의로 읽어야
+    // 페이지가 잘리지도, 재시작 위치가 밀리지도 않는다.
+    const queryViewport = vi.fn(async (request: ViewportRequest) => ({
+      pageId: request.pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: [bullet("three", 3072)]
+    }));
+    const notes = api(queryViewport);
+    const store = new NotesStore(notes);
     await store.bootstrap();
 
     // 이름이 너무 많아 한 줄씩 고쳐 넣기를 포기하는 폭이라 다시 읽는다.
@@ -1687,10 +1668,9 @@ describe("다른 기기의 변경 흡수", () => {
       deletedNodeIds: []
     });
 
-    expect(store.getSnapshot().pages.map((entry) => entry.id)).toEqual([
-      "page-1",
-      "page-2"
-    ]);
+    expect(notes.pages).toHaveBeenCalled();
+    expect(queryViewport.mock.calls.map(([request]) => request.pageId))
+      .not.toContain("root");
   });
 });
 
