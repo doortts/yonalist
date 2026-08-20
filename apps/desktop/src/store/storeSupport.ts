@@ -68,6 +68,14 @@ export const ROOT_ID = "root";
 
 export const DRAFT_DEBOUNCE_MS = 300;
 /**
+ * How long an uncommitted typing run may postpone SQLite. The debounce alone
+ * is a trailing one, so a typist who never pauses 300ms holds the whole run in
+ * memory and a crash takes all of it. Three seconds mirrors the export
+ * debounce's idle window: at most a sentence is ever exposed, and a commit
+ * every three seconds is far below any rate SQLite would feel.
+ */
+export const DRAFT_CEILING_MS = 3_000;
+/**
  * How long a typing run stays open between keystrokes. CodeMirror and
  * ProseMirror both open a new undo group after a 500ms pause; the 300ms draft
  * debounce sits inside every pause here, so the same felt gap needs the

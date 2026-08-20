@@ -5,6 +5,7 @@ import {
   cancelTimer,
   confirmedNote,
   confirmedText,
+  DRAFT_CEILING_MS,
   DRAFT_DEBOUNCE_MS,
   TYPING_IDLE_MS
 } from "./storeSupport";
@@ -27,6 +28,7 @@ export class StoreDrafts {
     new Map<string, ReturnType<typeof setTimeout>>();
   private readonly titleHistoryGroups = new Map<string, string>();
   private readonly typingRuns = new Map<string, number>();
+  private readonly firstPending = new Map<string, number>();
   private activeBackspaceGroup: string | null = null;
   private backspaceSequence = 0;
 
@@ -55,6 +57,22 @@ export class StoreDrafts {
     this.typingRuns.delete(`note:${id}`);
   }
 
+  /**
+   * The debounce is a trailing one, so keystrokes closer together than its
+   * window keep pushing the commit out and the crash window becomes the whole
+   * typing run. The first keystroke after a commit starts a deadline; the one
+   * that crosses it commits instead of resetting the timer once more.
+   */
+  private ceilingPassed(key: string): boolean {
+    const now = Date.now();
+    const began = this.firstPending.get(key);
+    if (began === undefined) {
+      this.firstPending.set(key, now);
+      return false;
+    }
+    return now - began >= DRAFT_CEILING_MS;
+  }
+
   setTitle(id: string, text: string): void {
     if (this.activeBackspaceGroup) {
       this.titleHistoryGroups.set(id, this.activeBackspaceGroup);
@@ -68,6 +86,10 @@ export class StoreDrafts {
       { nodeIds: [id] }
     );
     this.cancelTitle(id);
+    if (this.ceilingPassed(`text:${id}`)) {
+      void this.flushTitle(id).catch(() => undefined);
+      return;
+    }
     // Nobody awaits a debounce, so a rethrow here could only reach the window
     // as an unhandled rejection. When the command itself fails, the choke
     // point has already put it in `state.error`; a failure outside the choke
@@ -81,6 +103,7 @@ export class StoreDrafts {
 
   async flushTitle(id: string): Promise<void> {
     this.cancelTitle(id);
+    this.firstPending.delete(`text:${id}`);
     const state = this.host.read();
     const submittedText = state.drafts[id];
     if (submittedText === undefined) return;
@@ -111,6 +134,10 @@ export class StoreDrafts {
       { nodeIds: [id] }
     );
     this.cancelNote(id);
+    if (this.ceilingPassed(`note:${id}`)) {
+      void this.flushNote(id).catch(() => undefined);
+      return;
+    }
     this.noteTimers.set(id, setTimeout(
       () => void this.flushNote(id).catch(() => undefined),
       DRAFT_DEBOUNCE_MS
@@ -119,6 +146,7 @@ export class StoreDrafts {
 
   async flushNote(id: string): Promise<void> {
     this.cancelNote(id);
+    this.firstPending.delete(`note:${id}`);
     const state = this.host.read();
     const submittedNote = state.noteDrafts[id];
     if (submittedNote === undefined) return;
@@ -181,6 +209,11 @@ export class StoreDrafts {
       this.cancelNote(id);
       this.titleHistoryGroups.delete(id);
       this.endTypingRun(id);
+      // The draft is gone, so its ceiling has nothing to bound; leaving the
+      // window open would make the first keystroke of the next run commit on
+      // arrival.
+      this.firstPending.delete(`text:${id}`);
+      this.firstPending.delete(`note:${id}`);
     });
   }
 }

@@ -1,7 +1,7 @@
 import type { MutationReceipt } from "../../../../packages/contracts/generated/MutationReceipt";
 import { initialNotesState, type NotesState } from "../notesState";
 import { StoreDrafts } from "./storeDrafts";
-import { DRAFT_DEBOUNCE_MS } from "./storeSupport";
+import { DRAFT_CEILING_MS, DRAFT_DEBOUNCE_MS } from "./storeSupport";
 
 function node(text: string) {
   return {
@@ -31,6 +31,39 @@ function receipt(text: string, revision: number): MutationReceipt {
       redoDepth: 0
     }
   };
+}
+
+function drafting() {
+  let state: NotesState = {
+    ...initialNotesState,
+    status: "ready",
+    sessionId: "session-1",
+    revision: 1,
+    activePageId: "page-1",
+    nodes: [node("")]
+  };
+  const execute = vi.fn(async (
+    command,
+    _historyGroup: string | null = null
+  ) => {
+    const next = receipt(
+      command.kind === "updateText" ? command.text : "",
+      state.revision + 1
+    );
+    state = { ...state, revision: next.revision, nodes: next.changedNodes };
+    return next;
+  });
+  const breakHistoryGroup = vi.fn();
+  const drafts = new StoreDrafts({
+    read: () => state,
+    write: (patch) => {
+      state = { ...state, ...patch };
+    },
+    execute,
+    settled: vi.fn().mockResolvedValue(undefined),
+    breakHistoryGroup
+  });
+  return { drafts, execute, breakHistoryGroup };
 }
 
 describe("StoreDrafts", () => {
@@ -188,5 +221,68 @@ describe("StoreDrafts", () => {
 
     expect(execute).not.toHaveBeenCalled();
     expect(state.noteDrafts["page-1"]).toBeUndefined();
+  });
+  it("commits a title mid-run when the typing never pauses", async () => {
+    vi.useFakeTimers();
+    try {
+      const { drafts, execute, breakHistoryGroup } = drafting();
+
+      // Ten seconds of keystrokes 100ms apart, so the trailing debounce never
+      // gets its 300ms gap and only the ceiling can commit.
+      for (let stroke = 1; stroke <= 100; stroke += 1) {
+        drafts.setTitle("one", "x".repeat(stroke));
+        await vi.advanceTimersByTimeAsync(100);
+      }
+
+      // Once per ceiling window -- at 3.0s, 6.1s and 9.2s, each window
+      // restarting at the keystroke after its commit -- not once per
+      // keystroke.
+      expect(execute).toHaveBeenCalledTimes(3);
+      // The run is still one undo step: the fence moved once, at the first
+      // keystroke, and every ceiling commit carries the run's own group.
+      expect(breakHistoryGroup).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls.map(([, group]) => group))
+        .toEqual(["text:one", "text:one", "text:one"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("commits a note mid-run when the typing never pauses", async () => {
+    vi.useFakeTimers();
+    try {
+      const { drafts, execute } = drafting();
+
+      for (let stroke = 1; stroke <= 100; stroke += 1) {
+        drafts.setNote("one", "x".repeat(stroke));
+        await vi.advanceTimersByTimeAsync(100);
+      }
+
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(execute.mock.calls.map(([command]) => command.kind))
+        .toEqual(["updateNote", "updateNote", "updateNote"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("commits a burst shorter than the ceiling exactly once", async () => {
+    vi.useFakeTimers();
+    try {
+      const { drafts, execute } = drafting();
+
+      drafts.setTitle("one", "a");
+      await vi.advanceTimersByTimeAsync(50);
+      drafts.setTitle("one", "ab");
+      await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      // The ceiling is a deadline for a run in progress, not a repeating
+      // timer: silence past it commits nothing more.
+      await vi.advanceTimersByTimeAsync(DRAFT_CEILING_MS * 2);
+
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
