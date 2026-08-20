@@ -28,6 +28,7 @@ export function WindowChrome({
           type="button"
           aria-label="Toggle sidebar"
           title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          data-tooltip={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-pressed={sidebarCollapsed}
           onClick={onToggleSidebar}
         >
@@ -46,6 +47,8 @@ export function WindowChrome({
           type="button"
           aria-label="Maximize detail"
           title={detailMaximized ? "Restore detail" : "Maximize detail"}
+          data-tooltip={detailMaximized ? "Restore detail" : "Maximize detail"}
+          data-tooltip-align="right"
           aria-pressed={detailMaximized}
           onClick={onToggleDetail}
         >

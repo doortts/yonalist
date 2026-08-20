@@ -558,7 +558,8 @@ describe("Yonalist v2 desktop shell", () => {
     const first = await screen.findByDisplayValue("First thought");
     const second = screen.getByDisplayValue("Second thought");
 
-    const ordinaryExport = await screen.findByRole("button", { name: "Export" });
+    const ordinaryExport = await screen.findByRole("button", { name: "Export as" });
+    expect(ordinaryExport).toHaveAttribute("data-tooltip", "Export as");
     fireEvent.click(ordinaryExport);
     let menu = await screen.findByRole("menu", { name: "Export notes" });
     expect(within(menu).getByRole("menuitem", {
@@ -577,7 +578,7 @@ describe("Yonalist v2 desktop shell", () => {
     expect(await screen.findByRole("toolbar", {
       name: "Actions for 1 selected notes"
     })).toBeVisible();
-    const selectionExport = await screen.findByRole("button", { name: "Export" });
+    const selectionExport = await screen.findByRole("button", { name: "Export as" });
     fireEvent.click(selectionExport);
     menu = await screen.findByRole("menu", { name: "Export notes" });
     expect(within(menu).getByRole("menuitem", {
@@ -594,7 +595,7 @@ describe("Yonalist v2 desktop shell", () => {
       name: "Actions for 2 selected notes"
     })).toBeVisible();
     const multiSelectionExport = await screen.findByRole("button", {
-      name: "Export"
+      name: "Export as"
     });
     fireEvent.click(multiSelectionExport);
     menu = await screen.findByRole("menu", { name: "Export notes" });

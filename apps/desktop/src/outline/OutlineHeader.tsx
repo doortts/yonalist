@@ -125,6 +125,7 @@ export function OutlineHeader({
               type="button"
               aria-label="All pages"
               title="All pages"
+              data-tooltip="All pages"
               aria-current={atRoot && !zoomed ? "page" : undefined}
               disabled={atRoot && !zoomed}
               onClick={atRoot ? onBack : onHome}
@@ -160,6 +161,7 @@ export function OutlineHeader({
           type="button"
           aria-label="Completed items"
           title={showCompleted ? "Hide completed items" : "Show completed items"}
+          data-tooltip={showCompleted ? "Hide completed items" : "Show completed items"}
           aria-pressed={showCompleted}
           onClick={onToggleCompleted}
         >
@@ -171,6 +173,7 @@ export function OutlineHeader({
             type="button"
             aria-label="Close split"
             title="Close split"
+            data-tooltip="Close split"
             onClick={onClose}
           >
             <X size={16} aria-hidden="true" />
@@ -251,6 +254,7 @@ export function OutlinePageHeading({
             type="button"
             aria-label={`Actions for ${target.text || "Untitled"}`}
             title="Page actions"
+            data-tooltip="Page actions"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             data-popup-open={menuOpen ? "true" : undefined}

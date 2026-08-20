@@ -18,6 +18,7 @@ describe("WindowChrome tooltips and controls", () => {
 
     const sidebarButton = screen.getByRole("button", { name: "Toggle sidebar" });
     expect(sidebarButton).toHaveAttribute("title", "Collapse sidebar");
+    expect(sidebarButton).toHaveAttribute("data-tooltip", "Collapse sidebar");
     expect(sidebarButton).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.click(sidebarButton);
@@ -33,6 +34,7 @@ describe("WindowChrome tooltips and controls", () => {
       />
     );
     expect(sidebarButton).toHaveAttribute("title", "Expand sidebar");
+    expect(sidebarButton).toHaveAttribute("data-tooltip", "Expand sidebar");
     expect(sidebarButton).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -51,6 +53,8 @@ describe("WindowChrome tooltips and controls", () => {
 
     const maximizeButton = screen.getByRole("button", { name: "Maximize detail" });
     expect(maximizeButton).toHaveAttribute("title", "Maximize detail");
+    expect(maximizeButton).toHaveAttribute("data-tooltip", "Maximize detail");
+    expect(maximizeButton).toHaveAttribute("data-tooltip-align", "right");
     expect(maximizeButton).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.click(maximizeButton);
@@ -66,6 +70,7 @@ describe("WindowChrome tooltips and controls", () => {
       />
     );
     expect(maximizeButton).toHaveAttribute("title", "Restore detail");
+    expect(maximizeButton).toHaveAttribute("data-tooltip", "Restore detail");
     expect(maximizeButton).toHaveAttribute("aria-pressed", "true");
   });
 });

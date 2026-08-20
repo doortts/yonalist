@@ -26,7 +26,7 @@ describe("split pane integration", () => {
     expect(splitTitle).toHaveFocus();
 
     const exportButtons = await screen.findAllByRole("button", {
-      name: "Export"
+      name: "Export as"
     });
     fireEvent.click(exportButtons[1]);
     const secondaryMenu = await screen.findByRole("menu", {

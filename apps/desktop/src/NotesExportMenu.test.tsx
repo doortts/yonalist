@@ -18,7 +18,7 @@ async function readyStore() {
 }
 
 async function openMenu() {
-  fireEvent.click(screen.getByRole("button", { name: "Export" }));
+  fireEvent.click(screen.getByRole("button", { name: "Export as" }));
   return screen.findByRole("menu", { name: "Export notes" });
 }
 
@@ -41,8 +41,9 @@ describe("NotesExportMenu", () => {
       />
     );
 
-    const exportButton = screen.getByRole("button", { name: "Export" });
-    expect(exportButton).toHaveAttribute("title", "Export");
+    const exportButton = screen.getByRole("button", { name: "Export as" });
+    expect(exportButton).toHaveAttribute("title", "Export as");
+    expect(exportButton).toHaveAttribute("data-tooltip", "Export as");
 
     let menu = await openMenu();
     for (const label of [
@@ -54,7 +55,7 @@ describe("NotesExportMenu", () => {
       expect(within(menu).getByRole("menuitem", { name: label })).toBeEnabled();
     }
 
-    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export as" }));
     rendered.rerender(
       <NotesExportMenu
         store={store}

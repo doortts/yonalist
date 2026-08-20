@@ -886,6 +886,57 @@ body.is-resizing-pane {
   color: var(--text-1);
 }
 
+/* Instant hover tooltip for action and navigation buttons */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-card);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  line-height: 1.2;
+  white-space: nowrap;
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 80ms ease, visibility 80ms ease;
+  z-index: 10000;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+[data-tooltip-align="right"]::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+[data-tooltip-align="left"]::after {
+  left: 0;
+  right: auto;
+  transform: none;
+}
+
+[data-tooltip][data-popup-open]::after,
+[data-tooltip][aria-expanded="true"]::after {
+  display: none;
+}
+
 /* Collapsing is a desktop-only affordance: below 981px the responsive layouts
    redefine the grid and hide these toggles, so the content-hiding rules are
    scoped to the desktop breakpoint to avoid blanking a reserved column. */
