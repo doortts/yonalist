@@ -435,6 +435,30 @@ describe("SettingsView", () => {
       screen.getByRole("radio", { name: "Nanum Pen handwriting face" })
     );
     expect(handlers.onHandwritingFaceChange).toHaveBeenCalledWith("nanum");
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: "Gaegu handwriting face" })
+    );
+    expect(handlers.onHandwritingFaceChange).toHaveBeenCalledWith("gaegu");
+  });
+
+  // Every bundled face has to be reachable; one added to the stylesheet but
+  // left out of the picker would ship as dead weight nobody can select.
+  it("offers every bundled handwriting face", () => {
+    renderSettings({ textFont: "hand" });
+
+    for (const label of [
+      "Excalidraw",
+      "Nanum Pen",
+      "Gaegu",
+      "Gamja Flower",
+      "Poor Story",
+      "Single Day"
+    ]) {
+      expect(
+        screen.getByRole("radio", { name: `${label} handwriting face` })
+      ).toBeTruthy();
+    }
   });
 
   it("checks unused assets and purges only after confirmation", async () => {

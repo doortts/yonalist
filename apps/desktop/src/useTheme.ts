@@ -13,8 +13,20 @@ export type ResolvedTheme = LightTheme | DarkTheme;
 export type CaretColor = "auto" | string;
 /** What the outline's own text is set in; the rest of the app never changes. */
 export type TextFont = "sans" | "mono" | "hand";
-/** Which hand writes the outline once the outline text is handwriting. */
-export type HandwritingFace = "excalidraw" | "nanum";
+/**
+ * Which hand writes the outline once the outline text is handwriting.
+ * "excalidraw" is the Excalifont and Xiaolai pair excalidraw.com writes in;
+ * the rest each draw both scripts themselves.
+ */
+export const handwritingFaces = [
+  "excalidraw",
+  "nanum",
+  "gaegu",
+  "gamja-flower",
+  "poor-story",
+  "single-day"
+] as const;
+export type HandwritingFace = (typeof handwritingFaces)[number];
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
 const lightThemeStorageKey = "yonalist.lightTheme.v1";
@@ -83,8 +95,9 @@ function loadTextFont(): TextFont {
 }
 
 function loadHandwritingFace(): HandwritingFace {
-  return readStoredValue(handwritingFaceStorageKey) === "nanum"
-    ? "nanum"
+  const stored = readStoredValue(handwritingFaceStorageKey);
+  return handwritingFaces.includes(stored as HandwritingFace)
+    ? (stored as HandwritingFace)
     : "excalidraw";
 }
 
