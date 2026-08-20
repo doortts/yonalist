@@ -1651,6 +1651,47 @@ describe("다른 기기의 변경 흡수", () => {
     ]);
     expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["three"]);
   });
+
+  it("페이지 목록에 페이지 아래 줄은 올리지 않는다", async () => {
+    // 루트를 읽으면 그 아래 전부가 경로 순서로 온다. 페이지는 루트의 직계
+    // 자식뿐이니, 페이지 안의 줄까지 목록에 올리면 사이드바가 남의 줄로 찬다.
+    const store = new NotesStore(
+      api(async (request) =>
+        request.pageId === "root"
+          ? {
+              pageId: "root",
+              anchorId: null,
+              beforeCursor: null,
+              afterCursor: null,
+              nodes: [
+                page("page-1", "Today"),
+                bullet("nested", 2048),
+                page("page-2", "Made there")
+              ]
+            }
+          : {
+              pageId: "page-1",
+              anchorId: null,
+              beforeCursor: null,
+              afterCursor: null,
+              nodes: [bullet("nested", 2048)]
+            }
+      )
+    );
+    await store.bootstrap();
+
+    // 이름이 너무 많아 한 줄씩 고쳐 넣기를 포기하는 폭이라 다시 읽는다.
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().pages.map((entry) => entry.id)).toEqual([
+      "page-1",
+      "page-2"
+    ]);
+  });
 });
 
 describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
