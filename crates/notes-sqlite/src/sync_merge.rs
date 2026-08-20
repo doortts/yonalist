@@ -20,12 +20,13 @@ pub(crate) fn merge(
     clock: &Clock,
     file: &VaultFile,
     input: &MergeInput,
+    vault_root: Option<&std::path::Path>,
 ) -> Result<MergeOutcome, StorageError> {
     let transaction = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(internal)?;
-    let outcome =
-        merge_document(&transaction, clock, file, input).map_err(StorageError::Internal)?;
+    let outcome = merge_document(&transaction, clock, file, input, vault_root)
+        .map_err(StorageError::Internal)?;
     // Trimmed by the same write that could breach the bound — and a merge can
     // record a defeat while writing no rows at all, which is exactly what an
     // older file arriving does.
@@ -603,7 +604,7 @@ pub(crate) fn reindex_vault(
             file_size: None,
         };
         report.read += 1;
-        if merge(connection, clock, &file, &input)?.applied > 0 {
+        if merge(connection, clock, &file, &input, Some(vault_root))?.applied > 0 {
             report.merged += 1;
         }
     }

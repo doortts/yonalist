@@ -23,6 +23,7 @@ use crate::document::{
 use crate::hlc::{Clock, Hlc};
 use rusqlite::{OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use uuid::Uuid;
 
 /// The step between sibling keys, matching the domain's own spacing so a merged
@@ -69,11 +70,15 @@ pub struct MergeOutcome {
 
 pub type MergeError = String;
 
+/// `vault_root` is how the merge can ask the folder a question — whether a file
+/// it has a record of is still standing. `None` means it cannot ask, and every
+/// such question answers "not standing".
 pub fn merge_document(
     transaction: &Transaction<'_>,
     clock: &Clock,
     file: &VaultFile,
     input: &MergeInput,
+    _vault_root: Option<&Path>,
 ) -> Result<MergeOutcome, MergeError> {
     match file {
         VaultFile::Page(page) => merge_page(transaction, clock, page, input),

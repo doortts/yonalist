@@ -95,7 +95,10 @@ impl Device {
             let recorded = self.storage.vault_file_hash(&relative).ok().flatten();
             match notes_sync::watcher::consider(&self.vault, &relative, recorded.as_deref()) {
                 Ok(notes_sync::watcher::Verdict::Merge(file, input)) => {
-                    let outcome = self.storage.merge_document(&file, &input).expect("merge");
+                    let outcome = self
+                        .storage
+                        .merge_document(&file, &input, None)
+                        .expect("merge");
                     if outcome.retire_file {
                         std::fs::remove_file(self.vault.join(&relative)).expect("retire");
                     }
@@ -951,9 +954,10 @@ fn a_trashed_picture_comes_back_as_a_picture() {
     // A picture line the rows already agree with is not an edit; if it were,
     // every device would restamp that node on every round.
     let replay = match notes_sync::watcher::consider(&two.vault, ".yonalist/trash.md", None) {
-        Ok(notes_sync::watcher::Verdict::Merge(file, input)) => {
-            two.storage.merge_document(&file, &input).expect("replay")
-        }
+        Ok(notes_sync::watcher::Verdict::Merge(file, input)) => two
+            .storage
+            .merge_document(&file, &input, None)
+            .expect("replay"),
         _ => panic!("the trash is a document, and this one holds a deleted picture"),
     };
     assert_eq!(replay.applied, 0, "the file says what the rows already say");

@@ -265,7 +265,7 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Taken {
         // rewrite — it said something this device did not accept. Nothing
         // else would wake the exporter for that.
         Ok(Verdict::Merge(file, input)) => {
-            let Ok(outcome) = storage.merge_document(&file, &input) else {
+            let Ok(outcome) = storage.merge_document(&file, &input, Some(vault_root)) else {
                 return Taken::Nothing;
             };
             if outcome.retire_file {
@@ -701,7 +701,7 @@ mod tests {
             .export_pending(&vault, &home.path().join("images"))
             .expect("export");
         storage
-            .merge_document(&waiting_picture(), &picture_input())
+            .merge_document(&waiting_picture(), &picture_input(), None)
             .expect("a note waiting for its picture");
 
         let (told, changes) = std::sync::mpsc::channel();
@@ -771,7 +771,7 @@ mod tests {
             .export_pending(&linked, &home.join("images"))
             .expect("export");
         storage
-            .merge_document(&waiting_picture(), &picture_input())
+            .merge_document(&waiting_picture(), &picture_input(), None)
             .expect("a note waiting for its picture");
 
         let (told, changes) = std::sync::mpsc::channel();

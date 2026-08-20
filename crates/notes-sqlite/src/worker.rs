@@ -37,6 +37,9 @@ enum Request {
     MergeDocument {
         file: Box<notes_sync::document::VaultFile>,
         input: Box<notes_sync::merger::MergeInput>,
+        /// Where the folder is, for the merge's own questions about it. `None`
+        /// from a caller that has no vault to point at.
+        vault_root: Option<std::path::PathBuf>,
         reply: SyncSender<Result<notes_sync::merger::MergeOutcome, StorageError>>,
     },
     /// What this device is called, for the files it writes and for the settings
@@ -246,10 +249,12 @@ impl SqliteStorage {
         &self,
         file: &notes_sync::document::VaultFile,
         input: &notes_sync::merger::MergeInput,
+        vault_root: Option<&std::path::Path>,
     ) -> Result<notes_sync::merger::MergeOutcome, StorageError> {
         self.request(|reply| Request::MergeDocument {
             file: Box::new(file.clone()),
             input: Box::new(input.clone()),
+            vault_root: vault_root.map(std::path::Path::to_path_buf),
             reply,
         })
     }
@@ -613,12 +618,18 @@ impl SqliteStorage {
                                 &patch,
                             ));
                         }
-                        Request::MergeDocument { file, input, reply } => {
+                        Request::MergeDocument {
+                            file,
+                            input,
+                            vault_root,
+                            reply,
+                        } => {
                             let _ = reply.send(crate::sync_merge::merge(
                                 &mut connection,
                                 &clock,
                                 &file,
                                 &input,
+                                vault_root.as_deref(),
                             ));
                         }
                         Request::SetDeviceName { name, reply } => {

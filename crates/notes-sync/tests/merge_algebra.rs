@@ -85,7 +85,7 @@ fn input() -> MergeInput {
 
 fn merge(connection: &mut Connection, file: &VaultFile) -> usize {
     let transaction = connection.transaction().expect("begin");
-    let applied = merge_document(&transaction, &clock(), file, &input())
+    let applied = merge_document(&transaction, &clock(), file, &input(), None)
         .expect("merge")
         .applied;
     transaction.commit().expect("commit");
