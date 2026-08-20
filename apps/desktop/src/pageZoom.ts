@@ -1,12 +1,13 @@
+import { useSyncExternalStore } from "react";
 import { outlinePlatform } from "./outline/outlineSupport";
 
 // A press moves 5%, small enough that the reader can stop where the text feels
 // right instead of picking between two sizes that both miss.
-const STEP = 5;
+export const STEP = 5;
 // Half size to triple: past either end the window's own chrome stops fitting
 // what it holds, and there is nothing further to read.
-const MIN_PERCENT = 50;
-const MAX_PERCENT = 300;
+export const MIN_ZOOM_PERCENT = 50;
+export const MAX_ZOOM_PERCENT = 300;
 const storageKey = "yonalist.pageZoom.v1";
 
 /**
@@ -28,7 +29,7 @@ export function pageZoomStep(event: KeyboardEvent): number {
 function loadPercent(): number {
   try {
     const stored = Number(window.localStorage.getItem(storageKey));
-    return Number.isInteger(stored) && stored >= MIN_PERCENT && stored <= MAX_PERCENT
+    return Number.isInteger(stored) && stored >= MIN_ZOOM_PERCENT && stored <= MAX_ZOOM_PERCENT
       ? stored
       : 100;
   } catch {
@@ -36,8 +37,29 @@ function loadPercent(): number {
   }
 }
 
-// One webview, one size: nothing renders this, so it needs no React state.
 let percent = loadPercent();
+const listeners = new Set<(percent: number) => void>();
+
+function notifyListeners(): void {
+  for (const listener of listeners) {
+    listener(percent);
+  }
+}
+
+export function getPageZoom(): number {
+  return percent;
+}
+
+export function subscribePageZoom(listener: (percent: number) => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function usePageZoom(): number {
+  return useSyncExternalStore(subscribePageZoom, getPageZoom);
+}
 
 /**
  * The webview's own page zoom, which leaves every length the outline measures in
@@ -58,9 +80,23 @@ export function restorePageZoom(): Promise<void> {
   return percent === 100 ? Promise.resolve() : applyPercent();
 }
 
+/** Resets page zoom to 100%. */
+export async function resetPageZoom(): Promise<number> {
+  if (percent === 100) return percent;
+  percent = 100;
+  try {
+    window.localStorage.setItem(storageKey, String(percent));
+  } catch {
+    // The size still holds for the session without persistence.
+  }
+  notifyListeners();
+  await applyPercent();
+  return percent;
+}
+
 /** Answers the size it settled on, which at either end is the one it had. */
 export async function nudgePageZoom(step: number): Promise<number> {
-  const next = Math.min(MAX_PERCENT, Math.max(MIN_PERCENT, percent + step));
+  const next = Math.min(MAX_ZOOM_PERCENT, Math.max(MIN_ZOOM_PERCENT, percent + step));
   if (next === percent) return percent;
   percent = next;
   try {
@@ -68,6 +104,7 @@ export async function nudgePageZoom(step: number): Promise<number> {
   } catch {
     // The size still holds for the session without persistence.
   }
+  notifyListeners();
   await applyPercent();
   return percent;
 }

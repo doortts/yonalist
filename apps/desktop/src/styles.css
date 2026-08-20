@@ -1094,6 +1094,71 @@ body.is-resizing-pane {
   white-space: nowrap;
 }
 
+.statusbar-zoom-control {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  overflow: visible;
+}
+
+.statusbar-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.statusbar-zoom-btn:hover:not(:disabled) {
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+.statusbar-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.statusbar-zoom-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.statusbar-zoom-label:disabled {
+  cursor: default;
+  color: var(--text-2);
+}
+
+.statusbar-zoom-label:not(:disabled):hover {
+  background: var(--bg-active);
+  color: var(--accent);
+}
+
+.app-statusbar [data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 .statusbar-state {
   flex-shrink: 0;
   padding-left: 12px;

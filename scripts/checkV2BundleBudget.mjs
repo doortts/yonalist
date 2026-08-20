@@ -83,12 +83,16 @@ for (const file of files) {
 // the first paint. The webview API it calls is not in that number — it loads
 // through the lazy chunk the native drag-drop listener already pulls, so a
 // press pays for the module and nothing else.
-// Headroom: 1,301 raw — about 400 gzip at these chunks' ratio, inside the 1,020
-// gzip headroom, so raw still binds first — and still below the 8th largest
+// Measured 2026-08-21 at the status bar zoom stepper (Option D): the entry
+// pair is 357,327 raw / 108,063 gzip. The status bar holds the permanent
+// stepper control ([-], reset label, [+]), its subscription to the page zoom
+// store, and the reset logic.
+// Headroom: 1,073 raw — about 320 gzip at these chunks' ratio, inside the 1,505
+// gzip headroom, so raw still binds first — and still well below the 8th largest
 // lazy chunk (webview, 3,361 bytes), so eagerly importing any of the big eight
 // trips the gate the way it did before.
-const rawLimit = 348 * 1024;
-const gzipLimit = 106 * 1024;
+const rawLimit = 350 * 1024;
+const gzipLimit = 107 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +

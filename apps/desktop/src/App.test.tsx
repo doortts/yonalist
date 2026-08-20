@@ -620,7 +620,11 @@ describe("Yonalist v2 desktop shell", () => {
     // keeps state -- at the right, in front of Online.
     await within(statusBar).findByText("2 selected");
     expect([...statusBar.querySelector(".statusbar-actions")!.children]
-      .map((child) => child.textContent)).toEqual(["2 selected", "Online"]);
+      .map((child) => child.textContent)).toEqual([
+      "2 selected",
+      "100%",
+      "Online"
+    ]);
     expect(statusBar.querySelector(".statusbar-feedback")).toBeEmptyDOMElement();
   });
 
@@ -1944,4 +1948,47 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
+  it("renders page zoom stepper in status bar and supports zoom in, zoom out, reset, and keyboard shortcuts", async () => {
+    render(<App api={api()} />);
+    await screen.findByDisplayValue("First thought");
+
+    const zoomGroup = screen.getByRole("group", { name: "Page zoom" });
+    expect(zoomGroup).toBeVisible();
+
+    const zoomOutBtn = within(zoomGroup).getByRole("button", { name: "Zoom out" });
+    const zoomLabel = within(zoomGroup).getByRole("button", { name: /^Zoom level 100%/ });
+    const zoomInBtn = within(zoomGroup).getByRole("button", { name: "Zoom in" });
+
+    expect(zoomOutBtn).toHaveAttribute("data-tooltip", "Zoom out");
+    expect(zoomInBtn).toHaveAttribute("data-tooltip", "Zoom in");
+    expect(zoomLabel).toHaveTextContent("100%");
+    expect(zoomLabel).toBeDisabled();
+
+    // Click Zoom In
+    fireEvent.click(zoomInBtn);
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("105%");
+      expect(zoomLabel).not.toBeDisabled();
+      expect(zoomLabel).toHaveAttribute("data-tooltip", "Reset zoom to 100%");
+    });
+
+    // Click Zoom Label to Reset
+    fireEvent.click(zoomLabel);
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("100%");
+      expect(zoomLabel).toBeDisabled();
+      expect(zoomLabel).not.toHaveAttribute("data-tooltip");
+    });
+
+    // Keyboard shortcut Ctrl+= / Ctrl+- (or on mac Cmd+= / Cmd+-)
+    fireEvent.keyDown(window, { key: "=", ctrlKey: true });
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("105%");
+    });
+
+    fireEvent.keyDown(window, { key: "-", ctrlKey: true });
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("100%");
+    });
+  });
 });

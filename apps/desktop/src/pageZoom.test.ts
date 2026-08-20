@@ -1,4 +1,12 @@
-import { nudgePageZoom, pageZoomStep } from "./pageZoom";
+import {
+  getPageZoom,
+  MIN_ZOOM_PERCENT,
+  MAX_ZOOM_PERCENT,
+  nudgePageZoom,
+  pageZoomStep,
+  resetPageZoom,
+  subscribePageZoom
+} from "./pageZoom";
 
 function setPlatform(value: string): void {
   Object.defineProperty(globalThis.navigator, "platform", {
@@ -11,7 +19,10 @@ function press(init: KeyboardEventInit): KeyboardEvent {
   return new KeyboardEvent("keydown", init);
 }
 
-afterEach(() => setPlatform(""));
+afterEach(async () => {
+  setPlatform("");
+  await resetPageZoom();
+});
 
 describe("page zoom shortcut", () => {
   it("reads the mac chord in both directions and ignores the windows one", () => {
@@ -47,18 +58,36 @@ describe("page zoom shortcut", () => {
 });
 
 describe("page zoom size", () => {
-  // No `localStorage` under this test environment, which is the reason the
-  // module reads and writes it inside a try: the size still steps without it.
-  it("steps and stops at the ends", async () => {
+  it("steps, resets, and notifies subscribers", async () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
 
-    expect(await nudgePageZoom(5)).toBe(105);
-    expect(await nudgePageZoom(5)).toBe(110);
+    expect(getPageZoom()).toBe(100);
 
-    // Far past the ceiling in one press, then far past the floor.
-    expect(await nudgePageZoom(500)).toBe(300);
-    expect(await nudgePageZoom(5)).toBe(300);
-    expect(await nudgePageZoom(-500)).toBe(50);
-    expect(await nudgePageZoom(-5)).toBe(50);
+    const history: number[] = [];
+    const unsubscribe = subscribePageZoom((percent) => history.push(percent));
+
+    expect(await nudgePageZoom(5)).toBe(105);
+    expect(getPageZoom()).toBe(105);
+    expect(await nudgePageZoom(5)).toBe(110);
+    expect(getPageZoom()).toBe(110);
+
+    expect(await resetPageZoom()).toBe(100);
+    expect(getPageZoom()).toBe(100);
+
+    expect(history).toEqual([105, 110, 100]);
+
+    unsubscribe();
+    await nudgePageZoom(5);
+    expect(history).toEqual([105, 110, 100]);
+  });
+
+  it("clamps at the configured min and max bounds", async () => {
+    expect(await nudgePageZoom(500)).toBe(MAX_ZOOM_PERCENT);
+    expect(getPageZoom()).toBe(MAX_ZOOM_PERCENT);
+    expect(await nudgePageZoom(5)).toBe(MAX_ZOOM_PERCENT);
+
+    expect(await nudgePageZoom(-500)).toBe(MIN_ZOOM_PERCENT);
+    expect(getPageZoom()).toBe(MIN_ZOOM_PERCENT);
+    expect(await nudgePageZoom(-5)).toBe(MIN_ZOOM_PERCENT);
   });
 });
