@@ -24,8 +24,8 @@ function ExportTrigger({
       className="notes-export-trigger"
       type="button"
       aria-label="Export as"
-      title="Export as"
       data-tooltip="Export as"
+      data-tooltip-align="right"
       aria-haspopup="menu"
       aria-expanded={false}
       disabled={disabled}

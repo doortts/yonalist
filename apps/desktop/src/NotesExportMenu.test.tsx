@@ -42,8 +42,9 @@ describe("NotesExportMenu", () => {
     );
 
     const exportButton = screen.getByRole("button", { name: "Export as" });
-    expect(exportButton).toHaveAttribute("title", "Export as");
     expect(exportButton).toHaveAttribute("data-tooltip", "Export as");
+    expect(exportButton).toHaveAttribute("data-tooltip-align", "right");
+    expect(exportButton).not.toHaveAttribute("title");
 
     let menu = await openMenu();
     for (const label of [

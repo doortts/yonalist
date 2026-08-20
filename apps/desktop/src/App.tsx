@@ -710,8 +710,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 className="notes-library-icon-button"
                 type="button"
                 aria-label="Search"
-                title="Search"
                 data-tooltip="Search"
+                data-tooltip-align="left"
                 aria-expanded={false}
                 aria-keyshortcuts="Meta+F Control+F"
                 onClick={() => setSearchOpen(true)}
@@ -748,8 +748,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 type="button"
                 disabled={state.status === "loading"}
                 aria-keyshortcuts="Meta+N Control+N"
-                title="New page"
                 data-tooltip="New page"
+                data-tooltip-align="left"
                 onClick={createPage}
               >
                 <Plus size={16} aria-hidden="true" />
@@ -827,8 +827,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             type="button"
             aria-pressed={settingsOpen}
             aria-keyshortcuts="Meta+Comma Control+Comma"
-            title="Settings"
             data-tooltip="Settings"
+            data-tooltip-align="left"
             onPointerDown={() => {
               if (!settingsOpen) rememberSettingsReturn();
             }}

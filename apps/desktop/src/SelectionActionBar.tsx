@@ -115,7 +115,6 @@ export function SelectionActionBar({
       type="button"
       aria-label={label}
       aria-disabled={disabled}
-      title={disabled ? "This action is unavailable for the current selection." : label}
       data-tooltip={disabled ? "This action is unavailable for the current selection." : label}
       onClick={() => {
         if (!disabled) onClick();

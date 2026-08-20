@@ -1537,12 +1537,16 @@ describe("Yonalist v2 desktop shell", () => {
     await screen.findByDisplayValue("First thought");
 
     const completedButton = screen.getByRole("button", { name: "Completed items" });
-    expect(completedButton).toHaveAttribute("title", "Hide completed items");
+    expect(completedButton).toHaveAttribute("data-tooltip", "Hide completed items");
+    expect(completedButton).toHaveAttribute("data-tooltip-align", "right");
+    expect(completedButton).not.toHaveAttribute("title");
     expect(completedButton).toHaveAttribute("aria-pressed", "true");
 
     fireEvent.click(completedButton);
 
-    expect(completedButton).toHaveAttribute("title", "Show completed items");
+    expect(completedButton).toHaveAttribute("data-tooltip", "Show completed items");
+    expect(completedButton).toHaveAttribute("data-tooltip-align", "right");
+    expect(completedButton).not.toHaveAttribute("title");
     expect(completedButton).toHaveAttribute("aria-pressed", "false");
 
     expect(screen.queryByDisplayValue("First thought")).toBeNull();
@@ -1798,7 +1802,8 @@ describe("Yonalist v2 desktop shell", () => {
     expect(crumbLabels()).toEqual(["", "Today"]);
     const allPagesButton = within(breadcrumb()).getByRole("button", { name: "All pages" });
     expect(allPagesButton).toBeEnabled();
-    expect(allPagesButton).toHaveAttribute("title", "All pages");
+    expect(allPagesButton).toHaveAttribute("data-tooltip", "All pages");
+    expect(allPagesButton).not.toHaveAttribute("title");
     const page = within(breadcrumb()).getByRole("button", { name: "Today" });
     expect(page).toHaveAttribute("aria-current", "page");
     expect(page).toBeDisabled();
