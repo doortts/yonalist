@@ -14,7 +14,9 @@
 //!
 //! A file whose bytes have not arrived — the placeholder a cloud client leaves
 //! behind — is not a file that was emptied. Merging it would delete everything
-//! it holds, so it waits for the bytes instead.
+//! it holds, so it waits for the bytes instead. An iCloud file evicted in place
+//! is the one shape that is read rather than refused: reading it is what brings
+//! its bytes down, and nothing else in the app would.
 //!
 //! And a file this format cannot read is left alone rather than merged into
 //! nothing.
@@ -56,6 +58,14 @@ pub fn consider(
     // behind when a file is "online only", and it reads as empty rather than
     // as missing. Empty is the whole test: this format always writes
     // frontmatter, so a document of ours is never zero bytes.
+    //
+    // An evicted iCloud file is deliberately *not* refused here, though it is
+    // just as empty of bytes. Since macOS 14 iCloud evicts in place — same name,
+    // same apparent size, no bytes — and the read below is what brings those
+    // bytes back down. Refusing it on the flag would leave nothing in the app
+    // that ever materialises a file, and an edit to that note could then never
+    // reach the vault. The read blocks while iCloud fetches, which is what this
+    // thread is for.
     if facts.len() == 0 {
         return Ok(Verdict::NotYetArrived);
     }

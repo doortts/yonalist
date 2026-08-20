@@ -29,7 +29,7 @@ for (const file of files) {
   gzip += gzipSync(bytes).length;
 }
 
-// `test:v2` runs this check, so these two numbers are a commitment, not a
+// `test:bundle` runs this check, so these two numbers are a commitment, not a
 // note: exceeding them stops the gate for everyone. Raise them only with a
 // fresh measurement recorded here, never to get a build through.
 // Measured 2026-08-16 at the first-run vault card: the entry pair is 336,472
@@ -53,8 +53,29 @@ for (const file of files) {
 // alone.
 // The reasoning above still holds: raw binds first, and the headroom below is
 // deliberately too small to hide a lazy chunk being imported eagerly.
-const rawLimit = 333 * 1024;
-const gzipLimit = 101 * 1024;
+// Measured 2026-08-20 at the dnd-kit dependency removal (3cabfa8d): the entry
+// pair is 351,748 raw / 106,605 gzip — 10,756 raw past the 333KiB limit. This
+// raise records a debt, not a fresh overrun: the gate went red about 100
+// commits ago, somewhere in the selection-band work, and stayed red because
+// only `test:all` runs this script and the per-change loop merges to main
+// locally, before CI ever sees a push. What grew is the multi-select family
+// (the band, its delete keys, the modifier-A select), the guide-line sub-bullet
+// toggle, cursor scrolling, and the page-title placeholder — keyboard- and
+// row-render code that has to be in the first load. The one seam big enough to
+// claw the bytes back instead, the clipboard/paste family plus image ingest, is
+// gesture-locked: the paste handler must read clipboardData and decide
+// preventDefault synchronously inside the event (outlinePasteGesture.ts records
+// why), so a chunk load cannot sit in front of it — and even moving all of it
+// lands only ~1.5KB under the old limit, which recent drift would eat within
+// days. Hence a raise, recorded late; the per-change gate list now runs this
+// check so the next overrun is caught at the commit that causes it, not a
+// hundred later.
+// Headroom: 2,556 raw — about 775 gzip at these chunks' ratio, inside the 915
+// gzip headroom, so raw still binds first — and below today's 8th largest lazy
+// chunk (webview, 3,361 bytes), so eagerly importing any of the big eight still
+// trips the gate. 347KiB would not have that property.
+const rawLimit = 346 * 1024;
+const gzipLimit = 105 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +

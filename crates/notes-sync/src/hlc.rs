@@ -97,6 +97,58 @@ pub fn is_device_id(value: &str) -> bool {
     value.len() == DEVICE_WIDTH && value.bytes().all(is_lowercase_hex)
 }
 
+/// The four characters this machine should stamp with, for whoever is
+/// provisioning a database that has none yet.
+///
+/// Derived rather than drawn at random, because a vault outlives a database. A
+/// database rebuilt on the same Mac used to become a second device, and the
+/// files left in the vault then held two generations of stamps disagreeing with
+/// each other over notes one person wrote.
+///
+/// Only ever a seed: the id a database already holds is the one it keeps. The
+/// machine's own identifier can change — `man 2 gethostuuid` says as much, and
+/// Apple's TN1103 warns a serial number can vanish after a repair — and a device
+/// that has already stamped rows must not be renamed underneath them.
+///
+/// Hashed, never carried through: the hardware identifier travels no further
+/// than this function. These four characters go into every file in the vault,
+/// and a vault is something people put in a shared folder.
+pub fn device_seed() -> String {
+    machine_seed()
+        .map(|bytes| {
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(bytes);
+            digest
+                .iter()
+                .take(2)
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        })
+        // A machine that will not say who it is still has to be able to stamp.
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..DEVICE_WIDTH].to_owned())
+}
+
+/// What this machine calls itself, in bytes. `gethostuuid` reads the same value
+/// as `IOPlatformUUID` from the same kernel data, without the subprocess and the
+/// IOKit start-up that reading the registry costs.
+#[cfg(target_os = "macos")]
+fn machine_seed() -> Option<[u8; 16]> {
+    let mut id = [0_u8; 16];
+    let timeout = libc::timespec {
+        tv_sec: 5,
+        tv_nsec: 0,
+    };
+    // SAFETY: the call fills exactly sixteen bytes — `uuid_t` — and both
+    // pointers name locals that outlive it.
+    let outcome = unsafe { libc::gethostuuid(id.as_mut_ptr(), &timeout) };
+    (outcome == 0).then_some(id)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn machine_seed() -> Option<[u8; 16]> {
+    None
+}
+
 fn is_lowercase_hex(byte: u8) -> bool {
     byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
