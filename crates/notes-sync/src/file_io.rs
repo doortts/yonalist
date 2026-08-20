@@ -28,6 +28,11 @@ pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub fn write_atomic(vault_root: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
     let resolved = resolve_inside(vault_root, path)?;
     coordinated_write(&resolved, |at| {
+        // Checked again, because the claim can come back about a different file
+        // than the one asked about: the coordinator substitutes a URL when the
+        // item moved, and a file moved out of the vault between the resolve and
+        // the claim would otherwise be written to wherever it went.
+        let at = &resolve_inside(vault_root, at)?;
         let parent = at.parent().ok_or("A vault path must name a directory.")?;
         let mut temporary = tempfile::Builder::new()
             .prefix(".yonalist-")
@@ -98,6 +103,9 @@ pub fn read_regular_bounded(
 ) -> Result<Vec<u8>, String> {
     let resolved = resolve_inside(vault_root, path)?;
     coordinated_read(&resolved, |at| {
+        // The same re-check the write side does, for the same reason: a
+        // substituted URL is not a path this vault has vouched for.
+        let at = &resolve_inside(vault_root, at)?;
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
