@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 
 use notes_application::{
     BootSnapshot, ExportError, ExportSnapshot, ExportSnapshotPort, ForestRequest, ForestSnapshot,
-    SearchPage, SearchQuery, StorageCommit, StorageError, StoragePort, ViewportPage,
+    PageSummary, SearchPage, SearchQuery, StorageCommit, StorageError, StoragePort, ViewportPage,
     ViewportRequest,
 };
 use notes_core::{DomainPatch, NoteNode, NotesCommand, NotesTree};
@@ -160,6 +160,9 @@ enum Request {
         session_id: String,
         viewport_limit: u32,
         reply: SyncSender<Result<BootSnapshot, StorageError>>,
+    },
+    Pages {
+        reply: SyncSender<Result<Vec<PageSummary>, StorageError>>,
     },
     Viewport {
         request: ViewportRequest,
@@ -553,6 +556,10 @@ impl SqliteStorage {
             viewport_limit,
             reply,
         })
+    }
+
+    pub fn pages(&self) -> Result<Vec<PageSummary>, StorageError> {
+        self.request(|reply| Request::Pages { reply })
     }
 
     pub fn query_viewport(&self, request: ViewportRequest) -> Result<ViewportPage, StorageError> {
@@ -951,6 +958,9 @@ impl SqliteStorage {
                                 session_id,
                                 viewport_limit,
                             ));
+                        }
+                        Request::Pages { reply } => {
+                            let _ = reply.send(queries::pages(&connection));
                         }
                         Request::Viewport { request, reply } => {
                             let _ = reply.send(queries::viewport(&connection, request));

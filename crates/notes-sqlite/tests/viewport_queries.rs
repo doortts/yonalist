@@ -809,3 +809,57 @@ fn a_viewport_carries_the_page_node_the_body_listing_leaves_out() {
         .unwrap();
     assert_eq!(root.page_node.map(|node| node.id).as_deref(), Some("root"));
 }
+
+#[test]
+fn the_page_list_is_every_live_root_child_however_deep_the_first_page_runs() {
+    // The page list used to be read off the root's viewport window, which
+    // carries the whole forest depth first and stops at its row limit: more
+    // pages than that limit, or one busy page ahead of them, was enough to
+    // push the rest out of the sidebar.
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    let mut revision = 0;
+    for index in 0..90 {
+        create_page(
+            &service,
+            revision,
+            &format!("page-{index:02}"),
+            &format!("Page {index}"),
+        );
+        revision += 1;
+    }
+    execute(
+        &service,
+        "child",
+        revision,
+        IpcNotesCommand::CreateNode {
+            id: "child".into(),
+            parent_id: "page-00".into(),
+            before_id: None,
+            text: "Task".into(),
+        },
+    );
+    revision += 1;
+    create_page(&service, revision, "trashed", "Gone");
+    revision += 1;
+    execute(
+        &service,
+        "trash",
+        revision,
+        IpcNotesCommand::DeleteSubtree {
+            id: "trashed".into(),
+        },
+    );
+
+    let pages = storage.pages().unwrap();
+
+    assert_eq!(
+        pages
+            .iter()
+            .map(|page| page.id.as_str())
+            .collect::<Vec<_>>(),
+        (0..90)
+            .map(|index| format!("page-{index:02}"))
+            .collect::<Vec<_>>()
+    );
+}
