@@ -11,6 +11,7 @@ locked and never sees a second writer.
     scripts/yonaInspect.py node rDibyYosWVJY
     scripts/yonaInspect.py timeline --since 17:00
     scripts/yonaInspect.py instances       # who else writes this vault
+    scripts/yonaInspect.py device          # is this machine's id stable?
     scripts/yonaInspect.py conflicts
     scripts/yonaInspect.py hlc 0mt196sb0-00-52e4
 """
@@ -18,10 +19,13 @@ locked and never sees a second writer.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import ctypes.util
 import datetime as dt
 import json
 import os
 import pathlib
+import hashlib
 import shutil
 import sqlite3
 import sys
@@ -91,6 +95,31 @@ def unescape_inline(value: str) -> str:
             out.append(value[index])
             index += 1
     return "".join(out)
+
+
+def machine_seed() -> bytes | None:
+    """The sixteen bytes `gethostuuid(2)` gives, which is `IOPlatformUUID`.
+
+    Same call `crates/notes-sync/src/hlc.rs` makes, so this answers "what would
+    this machine provision" without building the app. Measured to survive the
+    App Sandbox and the hardened runtime, so a failure here is a real failure
+    rather than a signing artefact.
+    """
+    if sys.platform != "darwin":
+        return None
+
+    class Timespec(ctypes.Structure):
+        _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"))
+    buffer = (ctypes.c_ubyte * 16)()
+    if libc.gethostuuid(buffer, ctypes.byref(Timespec(5, 0))) != 0:
+        return None
+    return bytes(buffer)
+
+
+def derived_device_id(seed: bytes, width: int = 4) -> str:
+    return hashlib.sha256(seed).hexdigest()[:width]
 
 
 def show_ms(millis: int | None) -> str:
@@ -464,6 +493,34 @@ def command_doctor(state: State, _args) -> int:
     return 1
 
 
+def command_device(state: State, _args) -> int:
+    """What this database stamps with, and what this machine would provision.
+
+    The stored value always wins -- a device that has already stamped rows must
+    not be renamed underneath them -- so a mismatch here is not a bug by itself.
+    It means one of two things, and they need different answers: this database
+    was provisioned before the derivation existed, or this data directory was
+    copied from another Mac and two machines now share one identity.
+    """
+    stored = state.device_id()
+    seed = machine_seed()
+    print(f"stored in sync_meta   {stored}")
+    if seed is None:
+        print("this machine          gethostuuid failed -- nothing to derive from")
+        print("\n  A provisioning now would fall back to a random value, which is the")
+        print("  design that makes a reinstalled app a second device.")
+        return 1
+    print(f"IOPlatformUUID        {seed.hex()}")
+    print(f"would provision       {derived_device_id(seed)}   (sha256 of the above, 4 hex)")
+    print(f"at 8 hex              {derived_device_id(seed, 8)}")
+    if stored == derived_device_id(seed):
+        print("\n  Stored and derived agree: this machine is stable across a reinstall.")
+        return 0
+    print(f"\n  Stored {stored!r} is not what this machine derives.")
+    print("  Either it predates the derivation, or this data directory came from")
+    print("  another Mac -- in which case two machines are stamping as one device.")
+    return 1
+
 def command_hlc(_state, args) -> int:
     print(show_hlc(args.stamp))
     return 0
@@ -487,6 +544,11 @@ def selftest() -> int:
     assert unescape_inline(r"a\\b") == r"a\b"
     assert unescape_inline(r"\[x\]") == "[x]"
     assert unescape_inline(r"one\ntwo") == "one\ntwo"
+    # Derivation is a pure hash: same bytes in, same four characters out,
+    # which is the whole property a reinstall depends on.
+    assert derived_device_id(bytes(range(16))) == derived_device_id(bytes(range(16)))
+    assert len(derived_device_id(b"x")) == 4 and len(derived_device_id(b"x", 8)) == 8
+    assert derived_device_id(b"x") != derived_device_id(b"y")
     print("selftest ok")
     return 0
 
@@ -502,6 +564,7 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="checks worth running first")
     sub.add_parser("instances", help="who else writes this vault")
+    sub.add_parser("device", help="stored device id vs what this machine derives")
     sub.add_parser("pages", help="each page's title in the database and in the vault")
     node = sub.add_parser("node", help="everything the state holds about one node")
     node.add_argument("id")
@@ -520,6 +583,7 @@ def main(argv: list[str]) -> int:
     commands = {
         "doctor": command_doctor,
         "instances": command_instances,
+        "device": command_device,
         "pages": command_pages,
         "node": command_node,
         "timeline": command_timeline,
