@@ -74,11 +74,16 @@ export function connectVaultSync(
 ): Unlisten {
   return listenForVaultChanges(
     (event, handler) => {
-      const registration = listen(event, handler).catch(() =>
-        // Nothing is listening, so there is nothing for the caller to stop --
-        // and the window still boots, one line below.
-        () => undefined
-      );
+      const registration = listen(event, handler).catch((cause) => {
+        // Said out loud because nothing else says it: a window that cannot
+        // hear the folder shows another device's edits only when something
+        // else reads the page, and the only other sign is the conflict banner
+        // coming back with nothing to explain it.
+        console.error("Yonalist could not listen for vault changes", cause);
+        // Nothing is listening, so there is nothing for the caller to stop —
+        // and the window still asks for its notes below.
+        return () => undefined;
+      });
       void registration.then(() => bootstrap());
       return registration;
     },

@@ -176,7 +176,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       );
     }, () => {
       // The listener is where the first read hangs off now, so a module that
-      // will not load must not leave the window empty as well as deaf.
+      // will not load must not leave the window empty as well as deaf. Not
+      // for a window that has already gone: the read would be an IPC into
+      // nothing.
+      if (!active) return;
       void store.bootstrap();
     });
     return () => {
