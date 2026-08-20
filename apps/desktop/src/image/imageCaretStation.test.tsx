@@ -347,6 +347,7 @@ describe("image caret station", () => {
 
       expect(stations(view)[1]).toHaveFocus();
     });
+
   // The station the key came from unmounts with the row it deletes, so the
   // caret has to be handed on before it falls to the document body.
   it("deletes the image from the station past it and hands the caret up",

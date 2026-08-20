@@ -328,9 +328,9 @@ describe("v2 outline keyboard intent resolver", () => {
       repeat: true
     }))).toEqual({ kind: "consume" });
     // A modifier makes it somebody else's key -- ⌘⌫ deletes to the head of a
-    // line and ⇧⌫ sweeps, neither of which is a picture leaving -- and the
-    // trash chord still reaches the row rules underneath. Deleting forward is
-    // nobody's ask here either: the picture stands behind this caret.
+    // line, which is no picture leaving -- and the trash chord still reaches the
+    // row rules underneath. Deleting forward is nobody's ask here either: the
+    // picture stands behind this caret, not ahead of it.
     for (const overrides of [
       { altKey: true },
       { ctrlKey: true },

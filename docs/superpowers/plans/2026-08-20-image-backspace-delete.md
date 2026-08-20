@@ -169,8 +169,11 @@ Weighed against threading an `onDeleteImage` callback through
   every keydown.
 - The one-shot `{ current: scope }` ref is equivalent to the pane's live
   ref: the section element is stable, and if the pane unmounts before
-  `takeCaret`, `focusWhenReady` finds no editor and no registered pane and
-  returns harmlessly.
+  `takeCaret`, the outcome is harmless -- `focus()` on a detached node does
+  nothing and `adjustLocalOutlineScroll` guards on `isConnected`. (It is not
+  that nothing runs: the detached subtree can still yield an editor and the
+  pane registry entry survives, so a few retry timers and a no-op `reveal()`
+  may still fire.)
 
 **4. Held Backspace.**
 First press resolves `trash`; `repeat` resolves `consume` — the same shape
