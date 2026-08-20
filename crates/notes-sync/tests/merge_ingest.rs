@@ -3390,3 +3390,98 @@ fn a_file_cannot_rename_this_device() {
         vec![(DEVICE.to_owned(), "MacBook Pro".to_owned())]
     );
 }
+
+/// The trash names the page each of its notes was taken from, and a page this
+/// vault has not read yet is stood up as a placeholder to hold that name. Every
+/// placeholder goes to the same key, because at that moment there is nothing to
+/// space them by.
+///
+/// So when the page's own file finally arrives, "a row already exists" must not
+/// be read as "somebody has already said where this goes". Nothing has: the row
+/// is a name with no reading. Left to keep the placeholder's key, the page comes
+/// to rest on top of whichever page home really put there — and two live
+/// siblings on one key is a tree the domain refuses, which stops the person
+/// typing anything at all rather than showing a page in the wrong order.
+#[test]
+fn a_page_standing_in_for_the_trash_does_not_land_on_a_real_page() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+
+    // Home puts one page at the front, with a real reading behind the claim.
+    let mut home = page(
+        vec![split_line(
+            PAGE_ID,
+            &stamp(5, "a3f2a3f2"),
+            "Projects",
+            "Projects-PrJects00001/README.md",
+        )],
+        &stamp(5, "a3f2a3f2"),
+    );
+    home.id = DocumentId::Home;
+    home.root.title = "Home".to_owned();
+    home.root.hlc = stamp(5, "a3f2a3f2");
+    let mut at_root = input();
+    at_root.file_path = "README.md".to_owned();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(home),
+        &at_root,
+        None,
+    )
+    .expect("home");
+
+    // The trash holds a note taken from a page home has never mentioned, so a
+    // placeholder for that page is stood up.
+    let mut gone = node(
+        NODE_ID,
+        &stamp(6, "a3f2a3f2"),
+        "Taken out of the second page",
+    );
+    gone.from = Some(("Mnutes000001".to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(6, "a3f2a3f2")),
+        &trash_input(),
+        None,
+    )
+    .expect("trash");
+
+    // And now that page's own file lands.
+    let mut elsewhere = input();
+    elsewhere.file_path = "Second-Mnutes000001/README.md".to_owned();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(second_page()),
+        &elsewhere,
+        None,
+    )
+    .expect("second page");
+
+    let keys: Vec<(String, i64)> = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, sort_key FROM notes_nodes
+                 WHERE parent_id = 'root' AND deleted = 0 ORDER BY sort_key, id",
+            )
+            .expect("prepare");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query");
+        rows.map(|row| row.expect("row")).collect()
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for (id, key) in &keys {
+        assert!(
+            seen.insert(key),
+            "`{id}` shares key {key} with a page already there: {keys:?}"
+        );
+    }
+    assert_eq!(
+        order_of_pages(&transaction),
+        vec!["Projects".to_owned(), "Second".to_owned()],
+        "the page home placed keeps the front, and the other joins the end"
+    );
+}

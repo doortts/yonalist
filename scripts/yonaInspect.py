@@ -23,9 +23,10 @@ import ctypes
 import ctypes.util
 import datetime as dt
 import json
+import hashlib
 import os
 import pathlib
-import hashlib
+import re
 import shutil
 import sqlite3
 import sys
@@ -127,6 +128,39 @@ def show_ms(millis: int | None) -> str:
         return "--"
     when = dt.datetime.fromtimestamp(millis / 1000)
     return f"{when:%Y-%m-%d %H:%M:%S}.{when.microsecond // 1000:03d}"
+
+
+
+STAMP_KEYS = ("max_hlc", "root_hlc", "stated_max_hlc")
+NARROW = re.compile(r"(?<![0-9a-z])([0-9a-z]{9}-[0-9a-z]{2}-)([0-9a-f]{4})(?![0-9a-f])")
+
+
+def widen_stamp_line(line: str) -> str:
+    """One vault line with its readings widened from four device characters to
+    eight, by appending zeroes.
+
+    Zeroes rather than the machine's own id: a stamp this device wrote before the
+    widening must not come back as one it wrote after. `mine` in the merge adopts
+    a file's content over the row's on a device match and records nothing, so the
+    safe direction is for old readings to read as another device's and take the
+    logged path.
+
+    Every id is padded the same way, so the order the old readings were in
+    survives -- the device field only breaks ties inside one millisecond.
+    """
+    key, separator, value = line.partition(": ")
+    if separator and key in STAMP_KEYS:
+        return key + separator + NARROW.sub(lambda m: m.group(1) + m.group(2) + "0000", value)
+    if separator and key == "device_id":
+        stripped = value.strip()
+        if len(stripped) == 4 and all(character in "0123456789abcdef" for character in stripped):
+            return f"{key}: {stripped}0000"
+        return line
+    # A footer token line, or an id comment carrying one. `t:` and `prev:` both
+    # hold readings, and both live inside the yonalist comment block.
+    if "t: " in line or "prev: " in line:
+        return NARROW.sub(lambda m: m.group(1) + m.group(2) + "0000", line)
+    return line
 
 
 # --- the two sources ---------------------------------------------------------
@@ -521,6 +555,53 @@ def command_device(state: State, _args) -> int:
     print("  another Mac -- in which case two machines are stamping as one device.")
     return 1
 
+
+def command_widen_stamps(state: State, args) -> int:
+    """Rewrites the vault's readings at this build's device width.
+
+    Needed once, by a vault written before the device field went from four
+    characters to eight. Every reading in such a folder is one this build cannot
+    decode, and the reader treats what it cannot decode as "never stamped" --
+    the same value a hand-typed line gets. That is survivable for one line and
+    ruinous for a whole vault: with no reading anywhere, no ordering claim can
+    be accepted, and pages come to rest on the placeholder key the trash left
+    behind. Three live pages on one key is a tree the app refuses to touch.
+
+    The notes themselves are not read or changed. Only frontmatter reading keys,
+    `device_id`, and the footer's `t:` / `prev:` tokens.
+    """
+    if state.vault is None:
+        print("This data directory has no vault recorded.")
+        return 1
+    files = sorted(state.vault.rglob("*.md"))
+    if not files:
+        print(f"No documents under {state.vault}")
+        return 1
+    total = 0
+    for path in files:
+        original = path.read_text(encoding="utf-8")
+        widened = "\n".join(widen_stamp_line(line) for line in original.split("\n"))
+        if widened == original:
+            print(f"  unchanged  {path.relative_to(state.vault)}")
+            continue
+        changes = sum(
+            1
+            for before, after in zip(original.split("\n"), widened.split("\n"))
+            if before != after
+        )
+        total += changes
+        print(f"  {changes:>4} line(s)  {path.relative_to(state.vault)}")
+        if args.apply:
+            path.write_text(widened, encoding="utf-8")
+    if not args.apply:
+        print(f"\n{total} line(s) would change. Nothing written -- pass --apply.")
+        return 0
+    print(f"\n{total} line(s) rewritten.")
+    print("The database still holds the old readings, so it has to go: quit the")
+    print("app, remove its sqlite files, and start it again. The notes are in the")
+    print("vault and come back from there.")
+    return 0
+
 def command_hlc(_state, args) -> int:
     print(show_hlc(args.stamp))
     return 0
@@ -549,6 +630,21 @@ def selftest() -> int:
     assert derived_device_id(bytes(range(16))) == derived_device_id(bytes(range(16)))
     assert len(derived_device_id(b"x")) == 4 and len(derived_device_id(b"x", 8)) == 8
     assert derived_device_id(b"x") != derived_device_id(b"y")
+    # Widening keeps the order the old readings were in, and touches only the
+    # lines that carry one.
+    assert widen_stamp_line("root_hlc: 0mt195asu-00-52e4") == "root_hlc: 0mt195asu-00-52e40000"
+    assert widen_stamp_line("device_id: 52e4") == "device_id: 52e40000"
+    assert widen_stamp_line("device_id: cad27a0b") == "device_id: cad27a0b"
+    assert widen_stamp_line("root_hlc: 0mt195asu-00-52e40000") == "root_hlc: 0mt195asu-00-52e40000"
+    assert (
+        widen_stamp_line("yid: rDibyYosWVJY t: 0mt195asu-00-52e4 split prev: aB@0mt0g7jil-00-52e4")
+        == "yid: rDibyYosWVJY t: 0mt195asu-00-52e40000 split prev: aB@0mt0g7jil-00-52e40000"
+    )
+    # Prose is left alone, readings or not.
+    assert widen_stamp_line("- 0mt195asu-00-52e4 라고 적어 뒀다") == "- 0mt195asu-00-52e4 라고 적어 뒀다"
+    old = ["0mt195asu-00-52e4", "0mt196sb0-00-52e4"]
+    new = [widen_stamp_line(f"root_hlc: {value}") for value in old]
+    assert new == sorted(new), "widening must not reorder what the vault already ordered"
     print("selftest ok")
     return 0
 
@@ -573,6 +669,12 @@ def main(argv: list[str]) -> int:
     sub.add_parser("conflicts", help="the overwrite log")
     sub.add_parser("dirty", help="what still owes a write to the vault")
     sub.add_parser("quarantine", help="files the parser refused")
+    widen = sub.add_parser(
+        "widen-stamps", help="rewrite a vault written at the old device width"
+    )
+    widen.add_argument(
+        "--apply", action="store_true", help="write the files (default: dry run)"
+    )
     stamp = sub.add_parser("hlc", help="decode one stamp")
     stamp.add_argument("stamp")
     sub.add_parser("selftest", help="check this script's own logic")
@@ -590,6 +692,7 @@ def main(argv: list[str]) -> int:
         "conflicts": command_conflicts,
         "dirty": command_dirty,
         "quarantine": command_quarantine,
+        "widen-stamps": command_widen_stamps,
         "hlc": command_hlc,
     }
     state = State(args.data_dir)

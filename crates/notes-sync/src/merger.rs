@@ -346,9 +346,19 @@ fn apply(
         // edited. An empty stamp cannot be used here: empty means "no claim has
         // ever been recorded", which is what makes the row fall back to where
         // it currently sits.
+        //
+        // A row with no reading is the same case as no row at all. The trash
+        // states which page each of its notes was taken from, and a page this
+        // vault has not read yet is stood up as a placeholder to hold that
+        // name — every placeholder at the same key, because there is nothing
+        // yet to space them by. Left as "a row exists", the page's own file
+        // makes no claim, keeps the placeholder's key, and comes to rest on top
+        // of whichever page home really put there. Two live siblings on one key
+        // is a tree the domain refuses, and then nothing can be typed at all.
+        let unplaced = row.is_none_or(|row| row.hlc.is_empty());
         let place = match place {
             Some(place) => Some(place),
-            None if !entry.positioned && entry.node.from.is_none() && row.is_none() => Some((
+            None if !entry.positioned && entry.node.from.is_none() && unplaced => Some((
                 order.last(&parent_for_place),
                 Hlc::new(0, 0, &device)?.encode(),
             )),
