@@ -195,6 +195,10 @@ pub struct SqliteStorage {
 /// devices, provisioning the row on first open along with the vault's own id.
 /// Never changed after that: a device that renamed itself would look like a
 /// different one to every merge.
+///
+/// The value is derived from the machine rather than drawn at random, so a
+/// database rebuilt here is this device again rather than a new one arguing with
+/// the stamps its own vault still holds.
 fn ensure_device_id(connection: &Connection) -> Result<String, StorageError> {
     let existing: Option<String> = connection
         .query_row(
@@ -207,7 +211,7 @@ fn ensure_device_id(connection: &Connection) -> Result<String, StorageError> {
     if let Some(device_id) = existing {
         return Ok(device_id);
     }
-    let device_id = uuid::Uuid::new_v4().simple().to_string()[..4].to_owned();
+    let device_id = notes_sync::hlc::device_seed();
     let vault_uuid = uuid::Uuid::new_v4().to_string();
     // Two processes can both find it empty; the one that loses reads back what
     // the other wrote rather than failing the open on the singleton key.

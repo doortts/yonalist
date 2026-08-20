@@ -127,3 +127,27 @@ fn a_uuid_is_no_longer_a_name_a_folder_can_be_built_from() {
         "home has no folder of its own"
     );
 }
+
+/// The four characters a stamp carries used to be sliced off a fresh random
+/// UUID, so a database provisioned twice on one Mac was two devices as far as
+/// every merge was concerned — and the vault's files, which outlive a database,
+/// then held two generations of stamps arguing with each other.
+///
+/// Derived from the machine, they agree. What the value *is* cannot be asserted
+/// — it differs per machine, and that is the point — so what is pinned is that
+/// it is stable, and that it is a device id the encoding will accept.
+#[test]
+fn one_machine_provisions_one_device_id() {
+    let once = notes_sync::hlc::device_seed();
+    let again = notes_sync::hlc::device_seed();
+
+    assert_eq!(
+        once, again,
+        "a second database on this Mac has to be the same device"
+    );
+    assert!(
+        notes_sync::hlc::is_device_id(&once),
+        "`{once}` is not a device id the stamp encoding can carry"
+    );
+    notes_sync::hlc::Hlc::new(0, 0, &once).expect("a reading can be issued with it");
+}
