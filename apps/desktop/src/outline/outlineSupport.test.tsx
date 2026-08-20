@@ -43,7 +43,8 @@ function storeStub() {
     endBackspaceGesture: vi.fn(),
     beginRemoveEmptyNode: vi.fn(() => ({ committed: Promise.resolve() })),
     cycleCompleted: vi.fn(() => Promise.resolve()),
-    setCompleted: vi.fn(() => Promise.resolve())
+    setCompleted: vi.fn(() => Promise.resolve()),
+    setCollapsed: vi.fn(() => Promise.resolve())
   };
 }
 
@@ -81,7 +82,8 @@ function options(store: ReturnType<typeof storeStub>, hasSelection = false) {
       duplicate: vi.fn(),
       delete: vi.fn(),
       copy: vi.fn(),
-      cut: vi.fn()
+      cut: vi.fn(),
+      setCollapsed: vi.fn()
     },
     onCopyImage: vi.fn(),
     onCutImage: vi.fn(),
@@ -256,6 +258,37 @@ describe("v2 outline row keys reach the collaborator they name", () => {
     expect(focusedNodeId()).toBe("gamma");
   });
 
+  it("sends fold and expand shortcuts to store.setCollapsed on a single row", () => {
+    const store = storeStub();
+    const given = options(store);
+    const field = mountRow(given);
+
+    // Primary shortcuts (Control on non-Mac test runner)
+    fireEvent.keyDown(field, { key: "ArrowUp", ctrlKey: true });
+    expect(store.setCollapsed).toHaveBeenCalledWith("beta", true);
+
+    fireEvent.keyDown(field, { key: "ArrowDown", ctrlKey: true });
+    expect(store.setCollapsed).toHaveBeenCalledWith("beta", false);
+
+    // Alias shortcuts
+    fireEvent.keyDown(field, { key: "[", ctrlKey: true, altKey: true });
+    expect(store.setCollapsed).toHaveBeenCalledWith("beta", true);
+
+    fireEvent.keyDown(field, { key: "]", ctrlKey: true, altKey: true });
+    expect(store.setCollapsed).toHaveBeenCalledWith("beta", false);
+  });
+
+  it("hands fold and expand shortcuts to selectionActions when a band is live", () => {
+    const given = options(storeStub(), true);
+    const field = mountRow(given);
+
+    fireEvent.keyDown(field, { key: "ArrowUp", ctrlKey: true });
+    expect(given.selectionActions.setCollapsed).toHaveBeenCalledWith(true);
+
+    fireEvent.keyDown(field, { key: "ArrowDown", ctrlKey: true });
+    expect(given.selectionActions.setCollapsed).toHaveBeenCalledWith(false);
+  });
+
   // The note gates the empty-row Backspace, and the page id is the caret's last
   // resort on the same key: two bare strings, so the swap has to be observable.
   it("takes an empty row away only when its note is empty too", () => {
@@ -327,5 +360,28 @@ describe("v2 image row keys reach the collaborator they name", () => {
     fireEvent.keyDown(mountImage(given), { key: "ArrowDown" });
 
     expect(focusedNodeId()).toBe("gamma");
+  });
+
+  it("sends fold and expand shortcuts to store.setCollapsed on an image row", () => {
+    const store = storeStub();
+    const given = options(store);
+    const frame = mountImage(given);
+
+    fireEvent.keyDown(frame, { key: "ArrowUp", ctrlKey: true });
+    expect(store.setCollapsed).toHaveBeenCalledWith("beta", true);
+
+    fireEvent.keyDown(frame, { key: "ArrowDown", ctrlKey: true });
+    expect(store.setCollapsed).toHaveBeenCalledWith("beta", false);
+  });
+
+  it("hands fold and expand shortcuts to selectionActions when an image is banded", () => {
+    const given = options(storeStub(), true);
+    const frame = mountImage(given);
+
+    fireEvent.keyDown(frame, { key: "ArrowUp", ctrlKey: true });
+    expect(given.selectionActions.setCollapsed).toHaveBeenCalledWith(true);
+
+    fireEvent.keyDown(frame, { key: "ArrowDown", ctrlKey: true });
+    expect(given.selectionActions.setCollapsed).toHaveBeenCalledWith(false);
   });
 });

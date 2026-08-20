@@ -420,7 +420,11 @@ export function NotesOutline({
       duplicate: () => runSelectionAction(duplicateSelection),
       delete: () => runSelectionAction(deleteSelection),
       copy: () => runSelectionAction(copySelection),
-      cut: () => runSelectionAction(cutSelection)
+      cut: () => runSelectionAction(cutSelection),
+      setCollapsed: (collapsed: boolean) => runSelectionAction(() =>
+        store.setCollapsedMany(
+          selection.selectedIds.map((id) => ({ id, collapsed }))
+        ))
     },
     onDragHandlePointerDown: (nodeId, event) =>
       outlineDrag.rowProps(nodeId).onDragHandlePointerDown(event),

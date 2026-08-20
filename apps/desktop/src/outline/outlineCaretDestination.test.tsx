@@ -49,6 +49,7 @@ interface OutlineCommand {
   readonly kind: string;
   readonly id: string;
   readonly text?: string;
+  readonly collapsed?: boolean;
   readonly previous_id?: string;
   readonly previous_text?: string;
   readonly current_text?: string;
@@ -80,6 +81,11 @@ function harness(seed: readonly NoteView[]) {
     command: OutlineCommand;
   }) => {
     const command = envelope.command;
+    if (command.kind === "setCollapsed") {
+      return Promise.resolve(receipt([patch(command.id, {
+        collapsed: command.collapsed
+      })]));
+    }
     if (command.kind === "removeEmptyNode") {
       const removed = nodes.find((node) => node.id === command.id)!;
       const promoted = nodes
@@ -310,7 +316,7 @@ describe("caret destination after Backspace", () => {
   });
 });
 
-describe("caret destination for the outline's ends", () => {
+describe("fold and expand shortcuts on a row", () => {
   const page = [
     bullet("first", 1_024, "alpha"),
     bullet("kid", 1_024, "beta", "first"),
@@ -326,23 +332,35 @@ describe("caret destination for the outline's ends", () => {
     return editor;
   }
 
-  it("takes the page title on the modified Up", async () => {
-    const { notesApi } = harness(page);
+  it("collapses the subtree on the modified Up", async () => {
+    const { notesApi, execute } = harness(page);
     mount(notesApi);
-    const editor = await caretIn("beta");
+    const editor = await caretIn("alpha");
 
     await act(async () => {
       fireEvent.keyDown(editor, { key: "ArrowUp", ctrlKey: true });
     });
 
     await waitFor(() => {
-      expect(caretHolder()).toHaveAttribute("data-node-id", "page-1");
-      expect(caretHolder().selectionStart).toBe(0);
+      expect(execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: expect.objectContaining({
+            kind: "setCollapsed",
+            id: "first",
+            collapsed: true
+          })
+        })
+      );
     });
   });
 
-  it("takes the end of the last row on the modified Down", async () => {
-    const { notesApi } = harness(page);
+  it("expands the subtree on the modified Down", async () => {
+    const collapsedPage = [
+      { ...bullet("first", 1_024, "alpha"), collapsed: true },
+      bullet("kid", 1_024, "beta", "first"),
+      bullet("last", 2_048, "gamma")
+    ];
+    const { notesApi, execute } = harness(collapsedPage);
     mount(notesApi);
     const editor = await caretIn("alpha");
 
@@ -351,9 +369,15 @@ describe("caret destination for the outline's ends", () => {
     });
 
     await waitFor(() => {
-      const caret = caretHolder();
-      expect(caret).toHaveAttribute("data-node-id", "last");
-      expect(caret.selectionStart).toBe("gamma".length);
+      expect(execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: expect.objectContaining({
+            kind: "setCollapsed",
+            id: "first",
+            collapsed: false
+          })
+        })
+      );
     });
   });
 });

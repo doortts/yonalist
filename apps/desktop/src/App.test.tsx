@@ -727,6 +727,56 @@ describe("Yonalist v2 desktop shell", () => {
     }));
   });
 
+  it("folds and unfolds a subtree via keyboard shortcuts", async () => {
+    const parent = { ...snapshot.viewport!.nodes[0], collapsed: false };
+    const child = {
+      ...snapshot.viewport!.nodes[1],
+      id: "child",
+      parentId: parent.id,
+      text: "Nested child",
+      sortKey: 1024
+    };
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [parent, child, snapshot.viewport!.nodes[1]]
+      }
+    });
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
+      revision: 8,
+      changedNodes: [{
+        ...parent,
+        collapsed: envelope.command.kind === "setCollapsed"
+          ? envelope.command.collapsed
+          : parent.collapsed
+      }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }));
+    render(<App api={notesApi} />);
+
+    const editor = await screen.findByDisplayValue("First thought") as HTMLTextAreaElement;
+    act(() => {
+      editor.focus();
+      editor.setSelectionRange(0, 0);
+    });
+
+    // Press Cmd+Up / Ctrl+Up to collapse
+    fireEvent.keyDown(editor, { key: "ArrowUp", ctrlKey: true });
+
+    await waitFor(() => {
+      expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
+        command: {
+          kind: "setCollapsed",
+          id: "bullet-1",
+          collapsed: true
+        }
+      }));
+    });
+  });
+
   it("opens, edits, and flushes a supporting note with Shift+Enter", async () => {
     const notesApi = api();
     notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
