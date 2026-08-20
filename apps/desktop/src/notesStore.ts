@@ -222,12 +222,19 @@ export class NotesStore {
       });
     }
     if (change && await this.patchFromVault(change)) return;
-    await Promise.all([
+    const [landed] = await Promise.all([
       // A page the backend has never heard of cannot be read back; there is
       // also nothing in it for another device to have changed.
-      this.state.provisionalPageId === null ? this.viewport.reload() : null,
+      this.state.provisionalPageId === null ? this.viewport.reload() : true,
       this.refreshPages()
     ]);
+    // The re-read carries no revision of its own — a viewport answer never
+    // does — and this is the only place that knows which one it was reading
+    // for. Without it the window keeps the number it booted on while the
+    // session has moved with the merge, and the next keystroke is refused.
+    // Only over rows that arrived: an edit accepted against text the user
+    // never saw overwrites what the other device wrote.
+    if (change && landed) this.update({ revision: change.revision });
   }
 
   /** Answers whether the change was applied; `false` asks for the re-read. */

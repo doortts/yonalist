@@ -67,10 +67,15 @@ export class StoreViewport {
    * Reads the page the user is on again, keeping them on it. What a merge
    * changed is anywhere in the page — including rows the window is not
    * showing — so the page is re-read rather than patched row by row.
+   *
+   * Answers whether the rows on screen are now the ones that answer described.
+   * The caller has a revision to claim for them, and claiming it over rows that
+   * never arrived would accept the next edit against text the user never saw.
    */
-  async reload(): Promise<void> {
+  async reload(): Promise<boolean> {
     const { activePageId } = this.getState();
-    if (!activePageId) return;
+    // No page open, so there are no rows that could be out of date.
+    if (!activePageId) return true;
     const sequence = ++this.sequence;
     try {
       const viewport = await this.api.queryViewport({
@@ -82,11 +87,14 @@ export class StoreViewport {
       });
       // A page the user left while this was in flight is not the page this
       // answer describes.
-      if (sequence === this.sequence) this.apply(viewport, false);
+      if (sequence !== this.sequence) return false;
+      this.apply(viewport, false);
+      return true;
     } catch (cause) {
       if (sequence === this.sequence) {
         this.update({ error: messageFrom(cause) });
       }
+      return false;
     }
   }
 

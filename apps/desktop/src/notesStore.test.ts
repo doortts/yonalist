@@ -1708,6 +1708,45 @@ describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
     expect(queryViewport).toHaveBeenCalled();
   });
 
+  it("한 화면보다 넓은 변경도 그 리비전을 창에 남긴다", async () => {
+    // 페이지를 통째로 다시 읽은 답에는 리비전이 없다. 그래도 창이 보고
+    // 있는 행은 그 리비전의 것이니, 창의 번호도 거기로 가야 한다 --
+    // 그러지 않으면 다음 키 입력이 revision conflict로 거부된다.
+    const queryViewport = vi.fn(async () => boot.viewport as ViewportPage);
+    const notes = api(queryViewport);
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().revision).toBe(9);
+  });
+
+  it("페이지를 다시 읽지 못했으면 리비전도 옮기지 않는다", async () => {
+    // 못 본 행 위에서 편집을 받아 주면 다른 기기가 쓴 것을 덮는다. 거부되는
+    // 키 입력이 정직한 답이다.
+    const queryViewport = vi.fn(async () => {
+      throw new Error("페이지를 읽을 수 없다");
+    });
+    const notes = api(queryViewport);
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().revision).toBe(boot.revision);
+  });
+
   /**
    * The row the caret sits in is gone when the page comes back, which is the
    * state the two tests below are about: `confirmedText` finds nothing for
