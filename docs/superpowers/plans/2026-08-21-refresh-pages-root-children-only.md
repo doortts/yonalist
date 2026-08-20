@@ -39,6 +39,9 @@ BINARY order.
 
 ## Ceilings this item leaves standing
 
+Both were paid off right after, in
+`2026-08-21-notes-pages-command.md`: the page list now has a query of its own.
+
 Both are older than this item and both need a Rust-side `notes_pages` command —
 `queries::bootstrap`'s SELECT lifted into a shared `fn pages` — to remove:
 
