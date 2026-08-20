@@ -76,7 +76,7 @@ Choose final gates by changed boundary:
 
 | Changed boundary | Final gates |
 | --- | --- |
-| Frontend-only | `npm test`, `npm run lint`, `npm run build`, and `git diff --check`. Explicitly skip Cargo tests, formatting, and Clippy when Rust, IPC payload contracts, persistence, and native configuration did not change. |
+| Frontend-only | `npm test`, `npm run lint`, `npm run test:bundle`, and `git diff --check`. `test:bundle` builds and then checks the entry bundle against its budget, so it stands in for `npm run build` rather than adding a second build. Explicitly skip Cargo tests, formatting, and Clippy when Rust, IPC payload contracts, persistence, and native configuration did not change. |
 | Rust/native, IPC payload contract, persistence, or native configuration | The frontend gates that apply, plus `cargo test --manifest-path src-tauri/Cargo.toml` and Rust formatting. Compare Clippy output with its baseline only when relevant to the touched boundary or explicitly required. |
 
 Do not repeatedly run the full suite inside the edit loop. Do not rerun a
