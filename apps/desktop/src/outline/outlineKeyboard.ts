@@ -805,12 +805,13 @@ export function handleImageNodeKeyDown(
   ) {
     if (input.imageEdge === "before") {
       const rows = input.visibleNodes;
-      const at = input.visibleIndex?.positionOf(input.nodeId) ??
-        rows.findIndex((row) => row.id === input.nodeId);
+      const at = visiblePositionOf(input, input.nodeId);
+      const current = rows[at];
       const above = rows[at - 1];
       if (
+        !current ||
         above?.kind !== "image" ||
-        above.parentId !== rows[at]!.parentId
+        above.parentId !== current.parentId
       ) return null;
       return input.repeat
         ? { kind: "consume" }

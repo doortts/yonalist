@@ -74,23 +74,7 @@ for (const file of files) {
 // gzip headroom, so raw still binds first — and below today's 8th largest lazy
 // chunk (webview, 3,361 bytes), so eagerly importing any of the big eight still
 // trips the gate. 347KiB would not have that property.
-// Measured 2026-08-21 at Backspace reaching the picture above a picture: the
-// entry pair is 354,315 raw / 107,184 gzip, 11 raw bytes past the 346KiB limit.
-// Most of that overrun is not this change: the 2026-08-20 raise left 2,556 raw
-// of headroom and only 205 were still there when this work started, the rest
-// spent by the handwriting-font settings and the boot-revision fixes that
-// landed in between. This change adds about 216 raw bytes -- the resolver arm
-// that reads the row behind an image's near station, the id the trash intent
-// now carries, and the one dispatch line that reads it. None of it can be lazy:
-// it is keyboard code on the first keystroke's path. The arm was already
-// shortened twice to fit (the structure lookup dropped for the visible row, the
-// index guard folded into the lookup itself) and still lands over, so this is a
-// raise rather than more shaving of a rule that has to stay readable.
-// Headroom: 1,013 raw -- about 305 gzip at these chunks' ratio, inside the 336
-// gzip headroom, so raw still binds first -- and still below today's 8th
-// largest lazy chunk (webview, 3,361 bytes), so eagerly importing any of the
-// big eight trips the gate as before.
-const rawLimit = 347 * 1024;
+const rawLimit = 346 * 1024;
 const gzipLimit = 105 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(

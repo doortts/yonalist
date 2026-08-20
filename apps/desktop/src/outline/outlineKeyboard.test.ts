@@ -370,15 +370,33 @@ describe("v2 outline keyboard intent resolver", () => {
       picture("upper", "page", 2_048),
       picture("lower", "page", 3_072)
     ];
-    const before = (nodes: readonly NoteView[], nodeId: string) => input({
+    // Production always hands the resolver both indexes, so the fixtures carry
+    // them: without one, every assertion here would walk the fallback scan and
+    // leave the lookup production uses untested.
+    const before = (
+      nodes: readonly NoteView[],
+      nodeId: string,
+      structure: readonly NoteView[] = nodes
+    ) => input({
       nodeId,
       key: "Backspace",
       imageEdge: "before",
       visibleNodes: nodes,
-      structureNodes: nodes
+      structureNodes: structure,
+      visibleIndex: new OutlineIndex(nodes),
+      structureIndex: new OutlineIndex(structure)
     });
+    // A collapsed row hiding a child puts the structure's positions ahead of
+    // the screen's, which is what says the row behind the caret has to be
+    // counted in the list the caret is standing in.
+    const collapsed = [
+      stacked[0]!,
+      node("tucked", "first", "Tucked", 1_024),
+      stacked[1]!,
+      stacked[2]!
+    ];
 
-    expect(handleImageNodeKeyDown(before(stacked, "lower")))
+    expect(handleImageNodeKeyDown(before(stacked, "lower", collapsed)))
       .toEqual({ kind: "trash", nodeId: "upper" });
     // A text row behind the caret is the commonest thing there, and it is not
     // this key's to take: the sibling above `upper` is a bullet.
