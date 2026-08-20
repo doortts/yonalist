@@ -288,9 +288,9 @@ describe("v2 outline keyboard intent resolver", () => {
   });
   // Backspace takes what stands behind the caret. Behind the station past the
   // picture, and behind the caret standing on the picture itself, that is the
-  // picture. From the station before it the picture stands ahead instead, and
-  // the row behind that caret is not this key's to reach for.
-  it("deletes the image on Backspace from behind it, never from ahead", () => {
+  // picture. Behind the station before it stands the previous row, and a bullet
+  // there is nobody's to take from a neighbour's station.
+  it("deletes the picture behind the caret, never the one ahead", () => {
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
       key: "Backspace",
@@ -356,6 +356,81 @@ describe("v2 outline keyboard intent resolver", () => {
       ctrlKey: true,
       shiftKey: true
     }))).toEqual({ kind: "trash" });
+  });
+
+  // From the before station the row behind the caret is the previous visible
+  // row, and a picture of the same parent is taken there the way the after
+  // station takes its own -- the same act, one row boundary back. A picture at
+  // another depth, the caret's own parent, and a bullet all stay: the
+  // head-of-line merge draws those same lines, so the two backward keys read as
+  // one caret.
+  it("takes the image sibling standing behind the before station", () => {
+    const stacked = [
+      node("first", "page", "First", 1_024),
+      picture("upper", "page", 2_048),
+      picture("lower", "page", 3_072)
+    ];
+    // Production always hands the resolver both indexes, so the fixtures carry
+    // them: without one, every assertion here would walk the fallback scan and
+    // leave the lookup production uses untested.
+    const before = (
+      nodes: readonly NoteView[],
+      nodeId: string,
+      structure: readonly NoteView[] = nodes
+    ) => input({
+      nodeId,
+      key: "Backspace",
+      imageEdge: "before",
+      visibleNodes: nodes,
+      structureNodes: structure,
+      visibleIndex: new OutlineIndex(nodes),
+      structureIndex: new OutlineIndex(structure)
+    });
+    // A collapsed row hiding a child puts the structure's positions ahead of
+    // the screen's, which is what says the row behind the caret has to be
+    // counted in the list the caret is standing in.
+    const collapsed = [
+      stacked[0]!,
+      node("tucked", "first", "Tucked", 1_024),
+      stacked[1]!,
+      stacked[2]!
+    ];
+
+    expect(handleImageNodeKeyDown(before(stacked, "lower", collapsed)))
+      .toEqual({ kind: "trash", nodeId: "upper" });
+    // A text row behind the caret is the commonest thing there, and it is not
+    // this key's to take: the sibling above `upper` is a bullet.
+    expect(handleImageNodeKeyDown(before(stacked, "upper"))).toBeNull();
+    // A held key takes one picture off the stack, not the whole stack.
+    expect(handleImageNodeKeyDown({
+      ...before(stacked, "lower"),
+      repeat: true
+    })).toEqual({ kind: "consume" });
+
+    const aunt = [
+      node("parent", "page", "Parent", 1_024),
+      picture("aunt", "parent", 1_024),
+      picture("lower", "page", 2_048)
+    ];
+    expect(handleImageNodeKeyDown(before(aunt, "lower"))).toBeNull();
+
+    const nested = [picture("upper", "page", 1_024), picture("lower", "upper", 1_024)];
+    expect(handleImageNodeKeyDown(before(nested, "lower"))).toBeNull();
+
+    const captioned = [
+      picture("upper", "page", 1_024),
+      node("cap", "upper", "Cap", 1_024),
+      picture("lower", "page", 2_048)
+    ];
+    expect(handleImageNodeKeyDown(before(captioned, "lower"))).toBeNull();
+
+    expect(handleImageNodeKeyDown(before([picture("solo", "page")], "solo")))
+      .toBeNull();
+    // The caret's own row missing from the rows on screen: with no row to
+    // stand on there is no row behind it either, and the lookup that reads
+    // both off the one list says so without asking the structure for a second
+    // opinion.
+    expect(handleImageNodeKeyDown(before(stacked, "ghost"))).toBeNull();
   });
 
   it("splits the selected title range into one atomic sibling gesture", () => {
