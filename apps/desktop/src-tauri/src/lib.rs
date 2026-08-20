@@ -1070,7 +1070,7 @@ fn announce(
 /// merged a single document, and a sweep that merged anything moved the
 /// revision: handing the window rows from before that is handing it a number
 /// the session has already left, which is its next keystroke refused. Taken
-/// either way -- a snapshot the sweep has outrun can never become current
+/// either way — a snapshot the sweep has outrun can never become current
 /// again, so the next ask reads the database rather than this.
 fn current_boot(cached: Option<BootSnapshot>, live_revision: u64) -> Option<BootSnapshot> {
     cached.filter(|snapshot| snapshot.revision == live_revision)
