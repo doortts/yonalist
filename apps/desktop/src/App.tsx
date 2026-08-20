@@ -520,6 +520,53 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     store
   ]);
   /**
+   * Today, with somewhere to type. The sidebar's Today only opens the day --
+   * looking at it should leave nothing behind -- but the chord is asked for by
+   * someone who has something to write, so it ends on a row: the empty one the
+   * day already ends with, or a new one after the last.
+   */
+  const openTodayToWrite = useCallback(() => {
+    setSettingsOpen(false);
+    setLibraryView("all");
+    setQuery("");
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      void store.openJournal(localDateIso()).then(async (pageId) => {
+        const snapshot = store.getSnapshot();
+        const rows = snapshot.nodes.filter(
+          (node) => node.parentId === pageId && !node.deleted
+        );
+        const last = rows.at(-1);
+        const spare = last &&
+          ((snapshot.drafts[last.id] ?? last.text).trim().length === 0)
+          ? last
+          : null;
+        const nodeId = spare ? spare.id : await store.createNode(pageId);
+        const after = {
+          ...emptyPaneLocation(pageId),
+          primaryFocus: {
+            nodeId,
+            field: "title",
+            selectionStart: 0,
+            selectionEnd: 0
+          } satisfies PaneFocusSnapshot
+        };
+        await applyNavigation(after);
+        // A row was written for this trip, so Undo has a command to take back
+        // as well as a view to put back.
+        if (spare) recordNavigation(before, after);
+        else recordMutationNavigation(before, after);
+      });
+    });
+  }, [
+    afterDraftFlush,
+    applyNavigation,
+    captureNavigation,
+    recordMutationNavigation,
+    recordNavigation,
+    store
+  ]);
+  /**
    * The keyboard's way in, matching what the button does with focus already on
    * it: remember where to come back to, then show the screen. Pressing it
    * again while it is up is nothing -- Escape is the way out.
@@ -534,10 +581,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // the page list -- does not tear the window's shortcuts down and put them
   // back.
   const shortcuts = useRef({
-    settingsOpen, closeSettings, openAllPages, openPageAt, createPage, openSettings
+    settingsOpen, closeSettings, openAllPages, openPageAt, createPage,
+    openSettings, openTodayToWrite
   });
   shortcuts.current = {
-    settingsOpen, closeSettings, openAllPages, openPageAt, createPage, openSettings
+    settingsOpen, closeSettings, openAllPages, openPageAt, createPage,
+    openSettings, openTodayToWrite
   };
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -601,6 +650,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       if (zoomStep !== 0) {
         event.preventDefault();
         void nudgePageZoom(zoomStep);
+        return;
+      }
+      // Today answers from anywhere, Shift and all: a capital J with the
+      // modifier held is nothing a line of text is asking for either.
+      if (
+        modifier && !otherModifier && event.shiftKey &&
+        event.key.toLowerCase() === "j"
+      ) {
+        event.preventDefault();
+        shortcuts.current.openTodayToWrite();
         return;
       }
       // A new page and the settings screen answer from anywhere too: neither
