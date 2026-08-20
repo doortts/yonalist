@@ -6,6 +6,7 @@ import type { NotesApi } from "../api";
 import { App } from "../App";
 import type { ImageImportRequest } from "../image/imageApi";
 import { buildOutlineClipboardFormats } from "./outlineClipboard";
+import { extractOutlinePayload } from "./outlinePaste";
 import { appApi } from "../test/appApiFixture";
 const snapshot: BootSnapshot = {
   sessionId: "session-clipboard",
@@ -658,14 +659,10 @@ describe("outline clipboard integration", () => {
     ].join("\n"));
     const [type, html] = setData.mock.calls[2]!;
     expect(type).toBe("text/html");
-    const encoded = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u
-      .exec(html)?.[1];
-    expect(encoded).toBeDefined();
-    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
-      atob(encoded!),
-      (character: string) => character.charCodeAt(0)
-    )));
-    expect(payload).toEqual({
+    // Read back through the paste side's own reader: where the payload rides is
+    // the writer's business, and a test that spells it out here pins the carrier
+    // rather than the round trip.
+    expect(extractOutlinePayload(html)).toEqual({
       kind: "yonalist-outline-clipboard",
       version: 1,
       nodes: [
@@ -799,8 +796,7 @@ describe("outline clipboard integration", () => {
     fireEvent.paste(editor, {
       clipboardData: {
         getData: (type: string) => type === "text/html"
-          ? '<div data-yonalist-outline-clipboard="!!!">'
-            + "<ul><li>Alpha</li></ul></div>"
+          ? '<ul data-yonalist-outline-clipboard="!!!"><li>Alpha</li></ul>'
           : "- Alpha\n  - Beta"
       }
     });

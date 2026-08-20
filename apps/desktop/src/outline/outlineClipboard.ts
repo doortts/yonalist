@@ -257,9 +257,13 @@ function escapeHtml(value: string): string {
 /**
  * One list element per run: numbered siblings go into an `<ol>` that starts
  * where the run does, and everything else stays a `<ul>`. A paste target that
- * reads the markup then sees the same numbers the screen showed.
+ * reads the markup then sees the same numbers the screen showed. `rootAttribute`
+ * rides the first run's own element, which is where the payload goes.
  */
-function htmlList(nodes: readonly OutlineClipboardNode[]): string {
+function htmlList(
+  nodes: readonly OutlineClipboardNode[],
+  rootAttribute = ""
+): string {
   const runs: Array<{ start: number | null; nodes: OutlineClipboardNode[] }> = [];
   for (const [node, number] of numberedSiblings(nodes)) {
     const open = runs.at(-1);
@@ -269,9 +273,12 @@ function htmlList(nodes: readonly OutlineClipboardNode[]): string {
     }
     runs.push({ start: number, nodes: [node] });
   }
-  return runs.map((run) => run.start === null
-    ? `<ul>${listItems(run.nodes)}</ul>`
-    : `<ol start="${run.start}">${listItems(run.nodes)}</ol>`).join("");
+  return runs.map((run, at) => {
+    const carrier = at === 0 && rootAttribute ? ` ${rootAttribute}` : "";
+    return run.start === null
+      ? `<ul${carrier}>${listItems(run.nodes)}</ul>`
+      : `<ol${carrier} start="${run.start}">${listItems(run.nodes)}</ol>`;
+  }).join("");
 }
 
 function listItems(nodes: readonly OutlineClipboardNode[]): string {
@@ -283,8 +290,8 @@ function listItems(nodes: readonly OutlineClipboardNode[]): string {
     const box = taskBox(node);
     const title = escapeHtml(node.text);
     const struck = node.completed && title.length > 0 ? `<s>${title}</s>` : title;
-    // A rich-text app prefers text/html and never reads the payload comment, so
-    // a note left out here is a note that app never sees.
+    // A rich-text app prefers text/html and never reads the payload attribute,
+    // so a note left out here is a note that app never sees.
     const note = node.note.length > 0
       ? `<blockquote>${escapeHtml(node.note).replace(/\n/gu, "<br>")}</blockquote>`
       : "";
@@ -302,11 +309,13 @@ function listItems(nodes: readonly OutlineClipboardNode[]): string {
 }
 
 /**
- * The payload as one `data-` attribute on a wrapper around the lists. It rode an
- * HTML comment until a real pasteboard showed what a WebView does to the markup
- * on its way out: it reparses it, and comments do not survive that pass while
- * `data-` attributes do -- the same pass that leaves `data-wf-layout` on every
- * row. base64 needs no attribute escaping of its own.
+ * The payload as one `data-` attribute on the first list element. It rode an HTML
+ * comment until a real pasteboard showed what a WebView does to the markup on
+ * its way out: it reparses it, and comments do not survive that pass. A `data-`
+ * attribute on a list element does -- the same pass leaves `data-wf-layout` on
+ * every row -- and it rides an element the fragment already had, so an app that
+ * reads the markup gets the same lists it got before. base64 needs no attribute
+ * escaping of its own.
  */
 function payloadAttribute(payload: OutlineClipboardPayload): string {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
@@ -334,7 +343,7 @@ export function buildOutlineClipboardFormats(
   if (!payload) return null;
   return {
     plain: serializeOutlinePayload(payload),
-    html: `<div ${payloadAttribute(payload)}>${htmlList(payload.nodes)}</div>`,
+    html: htmlList(payload.nodes, payloadAttribute(payload)),
     payload
   };
 }

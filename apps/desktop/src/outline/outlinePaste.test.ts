@@ -261,8 +261,8 @@ function carrier(payload: unknown): string {
   for (let at = 0; at < bytes.length; at += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   }
-  return `<div data-yonalist-outline-clipboard="${btoa(binary)}">`
-    + `<ul><li>x</li></ul></div>`;
+  return `<ul data-yonalist-outline-clipboard="${btoa(binary)}">`
+    + `<li>x</li></ul>`;
 }
 
 const PAYLOAD = {
@@ -293,12 +293,14 @@ describe("extractOutlinePayload", () => {
   });
 
   it("refuses corrupt base64 and truncated JSON without throwing", () => {
-    expect(extractOutlinePayload('<div data-yonalist-outline-clipboard="!!!">'))
+    // Five base64 characters cannot be a whole byte string: `atob` throws on it
+    // where the truncated JSON below only fails to parse.
+    expect(extractOutlinePayload('<ul data-yonalist-outline-clipboard="eyJra">'))
       .toBeNull();
-    expect(extractOutlinePayload('<div data-yonalist-outline-clipboard="eyJraW">'))
+    expect(extractOutlinePayload('<ul data-yonalist-outline-clipboard="!!!">'))
       .toBeNull();
     expect(extractOutlinePayload(
-      `<div data-yonalist-outline-clipboard="${btoa('{"kind":"yonalist-outl')}">`
+      `<ul data-yonalist-outline-clipboard="${btoa('{"kind":"yonalist-outl')}">`
     )).toBeNull();
   });
 

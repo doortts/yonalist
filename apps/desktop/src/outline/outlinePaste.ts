@@ -30,10 +30,23 @@ export interface PastedOutlineNode {
   readonly children: PastedOutlineNode[];
 }
 
-const PAYLOAD_ATTRIBUTE_VALUE = new RegExp(
-  `${PAYLOAD_ATTRIBUTE}="([A-Za-z0-9+/=]*)"`,
-  "u"
-);
+/**
+ * The payload off whichever element carries it. Parsed rather than matched: the
+ * markup has been through a foreign engine by the time it comes back, so the
+ * quoting, the attribute order and the element it sits on are all that engine's
+ * to choose. A row's own text can never forge one either -- text is escaped into
+ * content, and content is not attributes.
+ */
+function encodedPayload(html: string): string | null {
+  try {
+    return new DOMParser()
+      .parseFromString(html, "text/html")
+      .querySelector(`[${PAYLOAD_ATTRIBUTE}]`)
+      ?.getAttribute(PAYLOAD_ATTRIBUTE) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -126,8 +139,8 @@ function readClipboardNode(
 export function extractOutlinePayload(
   html: string
 ): OutlineClipboardPayload | null {
-  const encoded = PAYLOAD_ATTRIBUTE_VALUE.exec(html)?.[1];
-  if (encoded === undefined) return null;
+  const encoded = encodedPayload(html);
+  if (encoded === null) return null;
   try {
     const parsed: unknown = JSON.parse(new TextDecoder().decode(
       Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))

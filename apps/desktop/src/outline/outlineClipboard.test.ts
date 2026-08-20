@@ -318,30 +318,31 @@ describe("the rich outline clipboard payload", () => {
 });
 
 describe("the outline clipboard HTML carrier", () => {
-  const CARRIER = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u;
-  /** The lists on their own, with the payload's own wrapper taken off. */
-  const listMarkup = (html: string) =>
-    html.replace(CARRIER, "").replace(/<\/div>$/u, "");
+  const CARRIER = /(?<=^<[uo]l) data-yonalist-outline-clipboard="[A-Za-z0-9+/=]*"/u;
+  /** The lists on their own, with the payload the first one carries taken off. */
+  const listMarkup = (html: string) => html.replace(CARRIER, "");
   /** Every row carries the bullet layout Workflowy reads off the `<li>`. */
   const LI = '<li data-wf-layout="bullet">';
 
   /**
-   * What WKWebView hands the pasteboard, which is not what the copy wrote: it
-   * reparses the markup and drops every comment on the way through, while
-   * `data-` attributes come out the other side intact. Read off a real pasteboard
-   * after one Cmd-C -- `data-wf-layout` was still there and the payload was gone.
+   * What WKWebView hands the pasteboard, which is not what the copy wrote. Read
+   * off a real pasteboard after one Cmd-C: the markup came back reparsed, with a
+   * `<head>` in front of it and a computed `style` stamped on the element the
+   * copy started with, every comment dropped, and every `data-` attribute --
+   * `data-wf-layout` on each row, and the payload -- intact.
    */
-  const webViewWritten = (html: string) => html.replace(/<!--[\s\S]*?-->/gu, "");
+  const webViewWritten = (html: string) =>
+    '<head><meta charset="UTF-8"></head>' +
+    html
+      .replace(/<!--[\s\S]*?-->/gu, "")
+      .replace(/^<([uo]l)/u, '<$1 style="caret-color: rgb(0, 0, 0);"');
 
-  it("wraps the lists in the payload and round-trips it byte for byte", () => {
+  it("hands the payload to the first list element, not to a wrapper", () => {
     const built = formats(nodes, ["parent", "sibling"])!;
 
-    const encoded = CARRIER.exec(built.html)?.[1];
-    expect(encoded).toBeDefined();
-    const decoded = new TextDecoder().decode(
-      Uint8Array.from(atob(encoded!), (character) => character.charCodeAt(0))
-    );
-    expect(JSON.parse(decoded)).toEqual(built.payload);
+    expect(CARRIER.test(built.html)).toBe(true);
+    // The fragment an outside app reads is the lists it always was.
+    expect(listMarkup(built.html).startsWith("<ul>")).toBe(true);
   });
 
   it("round-trips the payload through the markup a WebView writes out", () => {
@@ -362,7 +363,7 @@ describe("the outline clipboard HTML carrier", () => {
     expect(listMarkup(built.html)).toBe(
       `<ul>${LI}[ ] &lt;b&gt;&amp;&lt;/b&gt; 표<ul>${LI}Child</li></ul></li></ul>`
     );
-    // The comment carries the title unescaped, so a paste reads it back exact.
+    // The payload carries the title unescaped, so a paste reads it back exact.
     expect(built.payload.nodes[0].text).toBe("<b>&</b> 표");
   });
 
