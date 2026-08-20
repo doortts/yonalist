@@ -68,9 +68,9 @@ export class StoreViewport {
    * changed is anywhere in the page — including rows the window is not
    * showing — so the page is re-read rather than patched row by row.
    *
-   * Answers whether the rows on screen are now the ones that answer described.
-   * The caller has a revision to claim for them, and claiming it over rows that
-   * never arrived would accept the next edit against text the user never saw.
+   * Answers whether the rows on screen are the merged ones. The caller has a
+   * revision to claim for them, and claiming it over rows that never arrived
+   * would accept the next edit against text the user never saw.
    */
   async reload(): Promise<boolean> {
     const { activePageId } = this.getState();
@@ -86,8 +86,10 @@ export class StoreViewport {
         limit: VIEWPORT_LIMIT
       });
       // A page the user left while this was in flight is not the page this
-      // answer describes.
-      if (sequence !== this.sequence) return false;
+      // answer describes — but whoever took the page over read it after the
+      // merge committed, so what is on screen is still the merged rows and the
+      // caller's revision is still theirs to claim.
+      if (sequence !== this.sequence) return true;
       this.apply(viewport, false);
       return true;
     } catch (cause) {

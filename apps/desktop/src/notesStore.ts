@@ -234,7 +234,13 @@ export class NotesStore {
     // session has moved with the merge, and the next keystroke is refused.
     // Only over rows that arrived: an edit accepted against text the user
     // never saw overwrites what the other device wrote.
-    if (change && landed) this.update({ revision: change.revision });
+    // Forward only. A narrow change can land while this re-read is still in
+    // flight and carry the window further on; taking it back to what this one
+    // was reading for would refuse the next keystroke, with nothing left to
+    // arrive that would put it right.
+    if (change && landed && change.revision > this.state.revision) {
+      this.update({ revision: change.revision });
+    }
   }
 
   /** Answers whether the change was applied; `false` asks for the re-read. */

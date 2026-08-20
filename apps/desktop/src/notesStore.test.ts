@@ -1756,6 +1756,70 @@ describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
     expect(store.getSnapshot().revision).toBe(boot.revision);
   });
 
+  it("느린 다시 읽기가 그 뒤에 온 리비전을 뒤로 끌지 않는다", async () => {
+    // 넓은 변경의 다시 읽기가 아직 오지 않은 사이에 좁은 변경이 도착해
+    // 리비전을 더 올려 놓는다. 뒤늦게 도착한 답이 창의 번호를 되돌리면
+    // 다음 키 입력이 거부되고, 이번에는 다른 변경이 오지 않는 한 아무도
+    // 고쳐 주지 않는다.
+    const releases: Array<(page: ViewportPage) => void> = [];
+    const notes = api(async (request) =>
+      request.pageId === "root"
+        ? {
+            pageId: "root",
+            anchorId: null,
+            beforeCursor: null,
+            afterCursor: null,
+            nodes: [page("page-1", "Today")]
+          }
+        : new Promise<ViewportPage>((resolve) => { releases.push(resolve); })
+    );
+    notes.queryForest = vi.fn(async () => ({
+      revision: 16,
+      nodes: [{ ...bullet("one", 1024), text: "그쪽에서 고친 것" }],
+      complete: true
+    }));
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    const wide = store.absorbVaultChange({
+      revision: 14,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+    await store.absorbVaultChange({
+      revision: 16,
+      changedNodeIds: ["one"],
+      deletedNodeIds: []
+    });
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    releases[0](boot.viewport as ViewportPage);
+    await wide;
+
+    expect(store.getSnapshot().revision).toBe(16);
+  });
+
+  it("열린 페이지가 없으면 리비전만 옮긴다", async () => {
+    // 화면에 행이 없으니 낡을 것도 없다. 여기서 번호를 붙들면 페이지를 여는
+    // 첫 편집이 거부된다.
+    const notes = api(async () => boot.viewport as ViewportPage);
+    notes.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      activePageId: null,
+      viewport: null
+    });
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().revision).toBe(9);
+  });
+
   /**
    * The row the caret sits in is gone when the page comes back, which is the
    * state the two tests below are about: `confirmedText` finds nothing for
