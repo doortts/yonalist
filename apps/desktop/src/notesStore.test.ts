@@ -1584,6 +1584,31 @@ describe("NotesStore draft flushing before commands", () => {
   });
 });
 
+describe("NotesStore 재부트스트랩", () => {
+  it("가이드를 쓰거나 다시 만든 뒤 새 스냅샷을 받아들인다", async () => {
+    // `writeGuide`와 `rebuildFromVault`가 하는 일이 이것뿐이다: 백엔드가
+    // 창 뒤에서 행을 바꿔 놓았으니 다시 읽어야 한다. 첫 부트스트랩에서
+    // 돌아오지 않으면 창은 아무도 알려주지 않은 리비전을 들고 있고, 다음
+    // 키 입력이 거부된다.
+    const notes = api(async () => boot.viewport as ViewportPage);
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    notes.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      revision: 13,
+      viewport: {
+        ...(boot.viewport as ViewportPage),
+        nodes: [bullet("guide", 1024)]
+      }
+    });
+    await store.bootstrap();
+
+    expect(store.getSnapshot().revision).toBe(13);
+    expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["guide"]);
+  });
+});
+
 describe("다른 기기의 변경 흡수", () => {
   it("보고 있는 페이지와 페이지 목록을 다시 읽는다", async () => {
     // Home now holds a page this window has never heard of, and the page it

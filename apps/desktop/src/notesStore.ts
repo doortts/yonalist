@@ -139,7 +139,11 @@ export class NotesStore {
   }
 
   async bootstrap(): Promise<void> {
-    if (this.state.status !== "idle") return;
+    // Only a bootstrap already in flight. Reading again is what `writeGuide`
+    // and `rebuildFromVault` are for: the backend moved rows behind this
+    // window's back, and a window left holding the revision it booted on has
+    // its next keystroke refused.
+    if (this.state.status === "loading") return;
     this.update({ status: "loading", error: null });
     try {
       const boot = await this.api.bootstrap();
