@@ -626,8 +626,7 @@ export function resolveOutlineKey(
     ) {
       return null;
     }
-    const index = input.visibleIndex?.positionOf(input.nodeId) ??
-      input.visibleNodes.findIndex((node) => node.id === input.nodeId);
+    const index = visiblePositionOf(input, input.nodeId);
     if (index < 0) return null;
     if (input.key === "ArrowUp" && index === 0) {
       return { kind: "focus", nodeId: input.pageId, edge: "start" };
