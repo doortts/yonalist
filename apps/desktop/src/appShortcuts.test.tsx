@@ -152,7 +152,10 @@ describe("leaving the settings screen", () => {
     await openSettings();
     const sidebar = within(screen.getByRole("navigation", { name: "Navigation" }));
 
-    fireEvent.click(sidebar.getByRole("button", { name: "Today" }));
+    // Scoped to the Pages list: the Journals section above it has a Today of
+    // its own, which is the day rather than the page named after it.
+    fireEvent.click(within(sidebar.getByRole("region", { name: "Pages" }))
+      .getByRole("button", { name: "Today" }));
 
     expect(await screen.findByDisplayValue("Today"))
       .toHaveAttribute("aria-label", "Page title");

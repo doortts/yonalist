@@ -1,4 +1,6 @@
-import { House, Minus, Plus, Search, Settings } from "lucide-react";
+import {
+  CalendarDays, House, Minus, Plus, Search, Settings
+} from "lucide-react";
 import {
   lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState,
   useSyncExternalStore, type CSSProperties
@@ -39,6 +41,8 @@ import {
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
 import { ROOT_ID } from "./store/storeSupport";
+import { journalDateOf } from "./journal";
+import { localDateIso } from "./outline/outlineSlash";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import { ShortcutHint, useShortcutHints } from "./shortcutHints";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
@@ -240,6 +244,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       ? owner
       : null;
   }, [outline.nodes, primaryZoomRootId, state.pages]);
+  // Journal days are pages, but they are not in this list: one arrives every
+  // day a reader writes, and a year of them would bury the pages somebody
+  // named. The Journals section above the list is where they are reached.
+  const pageRows = useMemo(
+    () => state.pages.filter((page) => journalDateOf(page.title) === null),
+    [state.pages]
+  );
   // A filter or a search takes the page rows off screen, and a row that is not
   // there cannot be the one the reader is on: All keeps the mark, the way it
   // does with no zoom at all.
@@ -253,6 +264,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // for any other reason -- a page trashed on another device, a stale history
   // entry -- names a page that is gone, and an editable page over a row the
   // backend does not have would refuse every keystroke.
+  // Which day the open page is, if it is a day at all. The Journals rows read
+  // it to know which of them the reader is standing on.
+  const openJournalDate = useMemo(() => {
+    const page = state.pages.find((entry) => entry.id === currentPageId);
+    return page ? journalDateOf(page.title) : null;
+  }, [currentPageId, state.pages]);
   const activePage = atHome
     ? { id: ROOT_ID, title: "" }
     : state.pages.find((page) => page.id === state.activePageId) ??
@@ -411,7 +428,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
    * or a search hides rows without renumbering the pages behind them.
    */
   const openPageAt = useCallback((place: number) => {
-    const page = state.pages[place];
+    const page = pageRows[place];
     if (!page) return;
     setSettingsOpen(false);
     // The number names a place in the list, so the list has to be the one the
@@ -419,7 +436,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     setLibraryView("all");
     setQuery("");
     void openPage(page.id);
-  }, [openPage, state.pages]);
+  }, [openPage, pageRows]);
   /**
    * Leaving the settings screen puts the reader back where they came from --
    * the page, the zoom, the band and the caret they left. Two things take
@@ -467,6 +484,30 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             selectionEnd: 0
           } satisfies PaneFocusSnapshot
         };
+        await applyNavigation(after);
+        recordNavigation(before, after);
+      });
+    });
+  }, [
+    afterDraftFlush,
+    applyNavigation,
+    captureNavigation,
+    recordNavigation,
+    store
+  ]);
+  /**
+   * The page a day is written on, opened. A day that has no page yet opens as
+   * a page nobody has written in -- the same provisional page a New page click
+   * opens, except that this one already knows what it is called.
+   */
+  const openJournalDay = useCallback((date: string) => {
+    setSettingsOpen(false);
+    setLibraryView("all");
+    setQuery("");
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      void store.openJournal(date).then(async (pageId) => {
+        const after = emptyPaneLocation(pageId);
         await applyNavigation(after);
         recordNavigation(before, after);
       });
@@ -802,6 +843,34 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
               </button>
             </div>
             <section
+              className="notes-navigation-section notes-navigation-journals"
+              aria-labelledby="journals-title"
+            >
+              <h2 id="journals-title" className="eyebrow">Journals</h2>
+              <div className="notes-library-list">
+                <div
+                  className="notes-library-page-row"
+                  data-active={openJournalDate === localDateIso()
+                    ? "true"
+                    : undefined}
+                >
+                  <button
+                    className="notes-library-page"
+                    type="button"
+                    aria-current={openJournalDate === localDateIso()
+                      ? "page"
+                      : undefined}
+                    aria-keyshortcuts="Meta+Shift+J Control+Shift+J"
+                    onClick={() => openJournalDay(localDateIso())}
+                  >
+                    <CalendarDays size={16} aria-hidden="true" />
+                    <span>Today</span>
+                    <ShortcutHint mac="⌘⇧J" other="Ctrl+Shift+J" />
+                  </button>
+                </div>
+              </div>
+            </section>
+            <section
               className="notes-navigation-section notes-navigation-pages"
               aria-labelledby="pages-title"
             >
@@ -828,7 +897,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                   </button>
                 </div>
                 {pageRowsListed &&
-                  state.pages.map((page, place) => (
+                  pageRows.map((page, place) => (
                     <LibraryPageRow
                       key={page.id}
                       page={page}

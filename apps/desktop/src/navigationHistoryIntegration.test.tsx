@@ -441,7 +441,11 @@ describe("navigation history integration", () => {
     const sidebar = screen.getByRole("navigation", { name: "Navigation" });
     // The page behind home is still the active one: leaving home has to work
     // even when the page clicked is the one already open.
-    fireEvent.click(within(sidebar).getByRole("button", { name: "Today" }));
+    // The Pages list's Today, not the Journals section's row for the day.
+    fireEvent.click(
+      within(within(sidebar).getByRole("region", { name: "Pages" }))
+        .getByRole("button", { name: "Today" })
+    );
     await waitFor(() => expect(screen.getByDisplayValue("Today"))
       .toHaveAttribute("aria-label", "Page title"));
 
