@@ -41,3 +41,28 @@ renamed internally -- the name table still reads `Excalifont`.
 Excalifont is licensed under the SIL Open Font License, Version 1.1. The
 subsets carry the copyright in their own name table but not the license text,
 so it ships beside them as `Excalifont-OFL.txt`.
+
+## Xiaolai SC, for Hangul in the handwriting text setting
+
+Retrieved from the Excalidraw repository on 2026-08-21. Excalifont has no
+Hangul glyphs, so Excalidraw loads a second hand-drawn face for CJK, and that
+face -- Xiaolai SC, derived from SetoFont -- is what draws Korean on
+excalidraw.com.
+
+Excalidraw splits Xiaolai into 209 woff2 subsets. The 52 whose declared
+unicode-range reaches Hangul are bundled under
+`apps/desktop/src/assets/xiaolai/` as byte-for-byte copies of
+`https://raw.githubusercontent.com/excalidraw/excalidraw/master/packages/excalidraw/fonts/Xiaolai/<name>`,
+under their upstream names, together with the ranges Excalidraw declares for
+them in `packages/excalidraw/fonts/Xiaolai/index.ts`. Between them they reach
+11,171 of the 11,172 modern Hangul syllables. The remaining 157 subsets carry
+Chinese and Japanese this setting never asks for and are not bundled.
+
+| Item | Value |
+| --- | --- |
+| Bundled subsets | 52 files, 3,202,004 bytes, listed with their SHA-256 in `apps/desktop/src/assets/xiaolai/SHA256SUMS` |
+| License | https://raw.githubusercontent.com/lxgw/kose-font/master/OFL.txt, 4,432 bytes, `0df7e09be4c2c850a48bd8beb9cd64b343aad49cd5d3f6cfb2ad2e3d28a56ca4` |
+
+Xiaolai SC is licensed under the SIL Open Font License, Version 1.1,
+copyright 2020-2024 LXGW and 2014 Nozomi Seto. The subsets carry no license
+text of their own, so it ships beside them as `Xiaolai-OFL.txt`.

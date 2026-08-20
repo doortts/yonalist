@@ -5,6 +5,7 @@ import {
 } from "react";
 import "./styles.css";
 import "./notes.css";
+import "./handwritingHangul.css";
 import "./formControls.css";
 import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { tauriNotesApi, type NotesApi } from "./api";
