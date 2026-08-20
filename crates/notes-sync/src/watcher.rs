@@ -13,8 +13,9 @@
 //! otherwise hide somebody's edit for good.
 //!
 //! A file whose bytes have not arrived — the placeholder a cloud client leaves
-//! behind — is not a file that was emptied. Merging it would delete everything
-//! it holds, so it waits for the bytes instead.
+//! behind, or the same file evicted in place, which is what iCloud does now —
+//! is not a file that was emptied. Merging it would delete everything it holds,
+//! so it waits for the bytes instead.
 //!
 //! And a file this format cannot read is left alone rather than merged into
 //! nothing.
@@ -52,11 +53,13 @@ pub fn consider(
     if !facts.is_file() {
         return Err(format!("`{relative}` is not a file this vault holds."));
     }
-    // A file the sync client has not filled in yet. Cloud clients leave one
-    // behind when a file is "online only", and it reads as empty rather than
-    // as missing. Empty is the whole test: this format always writes
-    // frontmatter, so a document of ours is never zero bytes.
-    if facts.len() == 0 {
+    // A file the sync client has not filled in yet, which comes in two shapes.
+    // A stub reads as empty, and empty is answer enough on its own: this format
+    // always writes frontmatter, so a document of ours is never zero bytes.
+    // iCloud stopped leaving stubs with macOS 14 and evicts in place instead —
+    // same name, same apparent size, no bytes — and nothing about that file's
+    // stat says so except the flag.
+    if facts.len() == 0 || crate::intake::is_dataless(&facts) {
         return Ok(Verdict::NotYetArrived);
     }
     let bytes =
