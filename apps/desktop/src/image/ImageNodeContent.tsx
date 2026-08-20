@@ -209,7 +209,7 @@ export function ImageNodeContent({
       // The menu sits inside this row and the lightbox is a portal of it, so
       // keys from either bubble through the React tree into the row's handler.
       // Backspace there deletes the picture the layer is standing over, so the
-      // row's key surface goes quiet for as long as a layer holds the focus.
+      // row's key surface stays quiet for as long as either one is open.
       onKeyDown={menuOpen || lightboxOpen ? undefined : onKeyDown}
       onPaste={onPaste}
     >

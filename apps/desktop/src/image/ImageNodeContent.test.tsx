@@ -369,10 +369,10 @@ describe("ImageNodeContent", () => {
     expect(imageActionMocks.download)
       .toHaveBeenCalledWith(store, "image-1", "cat.png", "image/png");
   });
-  // The menu sits inside this row and the lightbox is a portal of it, so keys
-  // from either bubble through the React tree into the row's own handler. The
-  // row answers Backspace by deleting the picture, which is no answer to a key
-  // aimed at the layer standing over it.
+  // Both halves of the guard are load-bearing, and each layer proves its own:
+  // the menu is a child of the row and the lightbox reaches it through a
+  // portal, so a one-sided guard leaves the other layer's keys deleting the
+  // picture underneath it.
   it("suspends the row's key surface while a layer is open", async () => {
     const residency = new ImageResidency(
       vi.fn().mockResolvedValue(Uint8Array.from([1])),
