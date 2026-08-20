@@ -53,6 +53,7 @@ export interface SelectionKeyboardActions {
   readonly delete: () => void;
   readonly copy: () => void;
   readonly cut: () => void;
+  readonly setCollapsed: (collapsed: boolean) => void;
 }
 
 /**
@@ -188,6 +189,7 @@ export function handleOutlineKeyDown(options: OutlineRowKeyOptions) {
     if (intent.kind === "cycleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    if (intent.kind === "setCollapsed") return selectionActions.setCollapsed(intent.collapsed);
     // The note field answers to none of the band's keys, so the band goes
     // before the caret leaves the row for it. A caret sent to the outline's far
     // end leaves it behind for the same reason: two lit things at once read as
@@ -254,6 +256,7 @@ export function handleImagePrimaryKeyDown(options: ImageRowKeyOptions) {
     if (intent.kind === "cycleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    if (intent.kind === "setCollapsed") return selectionActions.setCollapsed(intent.collapsed);
     // Same as a bullet: the band goes before the caret leaves the row, whether
     // for the note field or for the far end of the outline.
     if (intent.kind === "focusNote" || intent.kind === "focus") {
@@ -557,6 +560,9 @@ function executeRowIntent(
     }
     case "cycleComplete":
       void store.cycleCompleted(node.id);
+      return;
+    case "setCollapsed":
+      void store.setCollapsed(node.id, intent.collapsed);
       return;
     case "trash": {
       const targetId = intent.nodeId ?? node.id;

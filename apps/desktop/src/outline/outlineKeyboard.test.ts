@@ -1029,54 +1029,102 @@ describe("v2 outline keyboard intent resolver", () => {
     });
   });
 
-  // The chord runs to the ends of the outline, not to the ends of the row's own
-  // text, and it answers from the page title as readily as from a row.
-  it("runs the caret to the outline's ends on the modified vertical arrows", () => {
-    for (const target of ["row", "page"] as const) {
-      expect(resolveOutlineKey(input({
-        key: "ArrowUp",
-        ctrlKey: true,
-        target
-      })), `up ${target}`)
-        .toEqual({
-          kind: "focus",
-          nodeId: "page",
-          edge: "start",
-          // Home draws no title, so the first row is the top there.
-          fallbackNodeId: "parent"
-        });
-      expect(resolveOutlineKey(input({
-        key: "ArrowDown",
-        ctrlKey: true,
-        target
-      })), `down ${target}`)
-        .toEqual({ kind: "focus", nodeId: "next", edge: "end" });
-    }
-    // On a mac the same pair rides Cmd, and a chord for the other platform is
-    // nobody's binding there.
+  // Primary fold/expand shortcuts: Cmd+Up / Cmd+Down (or Ctrl+Up / Ctrl+Down)
+  // Alias fold/expand shortcuts: Cmd+Option+[ / Cmd+Option+] (or Ctrl+Alt+[ / Ctrl+Alt+])
+  it("resolves primary and alias fold/expand shortcuts on a row", () => {
+    // Primary collapse on mac (Cmd+ArrowUp)
     expect(resolveOutlineKey(input({
       key: "ArrowUp",
       metaKey: true,
       platform: "mac"
-    }))).toEqual({
-      kind: "focus",
-      nodeId: "page",
-      edge: "start",
-      fallbackNodeId: "parent"
-    });
-    // An empty outline has only its title to run to.
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Primary expand on mac (Cmd+ArrowDown)
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      metaKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Primary collapse on non-mac (Ctrl+ArrowUp)
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      ctrlKey: true,
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Primary expand on non-mac (Ctrl+ArrowDown)
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
       ctrlKey: true,
-      visibleNodes: []
-    }))).toEqual({ kind: "focus", nodeId: "page", edge: "end" });
-    // A held chord stops at the end it already reached.
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Alias collapse on mac (Cmd+Option+[)
     expect(resolveOutlineKey(input({
-      key: "ArrowDown",
+      key: "[",
+      metaKey: true,
+      altKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Alias expand on mac (Cmd+Option+])
+    expect(resolveOutlineKey(input({
+      key: "]",
+      metaKey: true,
+      altKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Alias collapse on non-mac (Ctrl+Alt+[)
+    expect(resolveOutlineKey(input({
+      key: "[",
       ctrlKey: true,
+      altKey: true,
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Alias expand on non-mac (Ctrl+Alt+])
+    expect(resolveOutlineKey(input({
+      key: "]",
+      ctrlKey: true,
+      altKey: true,
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Repeated shortcut consumes without extra dispatch
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      metaKey: true,
+      platform: "mac",
       repeat: true
     }))).toEqual({ kind: "consume" });
-    // Shift with the modifier is the row-moving binding, not this one.
+
+    expect(resolveOutlineKey(input({
+      key: "]",
+      ctrlKey: true,
+      altKey: true,
+      platform: "other",
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+
+    // Page title target consumes fold/expand chords
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      metaKey: true,
+      target: "page",
+      platform: "mac"
+    }))).toEqual({ kind: "consume" });
+
+    expect(resolveOutlineKey(input({
+      key: "[",
+      metaKey: true,
+      altKey: true,
+      target: "page",
+      platform: "mac"
+    }))).toEqual({ kind: "consume" });
+
+    // Shift with the modifier is the row-moving binding, not this one
     expect(resolveOutlineKey(input({
       key: "ArrowUp",
       ctrlKey: true,
@@ -1403,6 +1451,25 @@ describe("v2 outline keyboard intent resolver", () => {
       selectionEnd: 0,
       visibleNodes: parentWithChild,
       structureNodes: parentWithChild
+    }))).toBeNull();
+
+    // The merge reads the row behind the caret for text and then drops it, so a
+    // picture there would paste its filename onto the head of the line and lose
+    // its row out from under the attachment. A picture hangs under a bullet,
+    // never under the root, so the pair sits one level down.
+    const pictureAbove = [
+      node("holder", "page", "Holder", 1_024),
+      picture("shot", "holder", 1_024),
+      node("under", "holder", "beta", 2_048)
+    ];
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "under",
+      value: "beta",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: pictureAbove,
+      structureNodes: pictureAbove
     }))).toBeNull();
   });
 

@@ -12,6 +12,11 @@ export type SyncConflict = { seq: number, nodeId: string,
  */
 reason: string, 
 /**
+ * The file the dropped version arrived in, relative to the vault. Empty on
+ * a record written before this was kept.
+ */
+filePath: string, 
+/**
  * When the merge noticed the disagreement, which is later than either
  * version was edited and can be much later — a file arrives when the sync
  * client gets round to it.

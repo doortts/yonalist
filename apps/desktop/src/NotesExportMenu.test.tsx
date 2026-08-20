@@ -18,7 +18,7 @@ async function readyStore() {
 }
 
 async function openMenu() {
-  fireEvent.click(screen.getByRole("button", { name: "Export" }));
+  fireEvent.click(screen.getByRole("button", { name: "Export as" }));
   return screen.findByRole("menu", { name: "Export notes" });
 }
 
@@ -41,6 +41,11 @@ describe("NotesExportMenu", () => {
       />
     );
 
+    const exportButton = screen.getByRole("button", { name: "Export as" });
+    expect(exportButton).toHaveAttribute("data-tooltip", "Export as");
+    expect(exportButton).toHaveAttribute("data-tooltip-align", "right");
+    expect(exportButton).not.toHaveAttribute("title");
+
     let menu = await openMenu();
     for (const label of [
       "Selected node as Markdown",
@@ -51,7 +56,7 @@ describe("NotesExportMenu", () => {
       expect(within(menu).getByRole("menuitem", { name: label })).toBeEnabled();
     }
 
-    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export as" }));
     rendered.rerender(
       <NotesExportMenu
         store={store}
@@ -285,5 +290,36 @@ describe("NotesExportMenu", () => {
 
     await waitFor(() => expect(api.exportNotes).toHaveBeenCalledTimes(3));
     expect(vi.mocked(api.exportNotes).mock.calls[2][0].overwrite).toBe(true);
+  });
+
+  it("automatically clears success feedback after 3 seconds", async () => {
+    const { api, store } = await readyStore();
+    picker.pickExportPath.mockResolvedValue("C:\\exports\\Today.pdf");
+    vi.mocked(api.exportNotes).mockResolvedValue({
+      revision: 1,
+      rootNodeId: "page-1",
+      format: "pdf",
+      destinationPath: "C:\\exports\\Today.pdf"
+    });
+    render(
+      <NotesExportMenu
+        store={store}
+        currentRoot={{ id: "page-1", title: "Today" }}
+        selectedNode={null}
+      />
+    );
+
+    const menu = await openMenu();
+    fireEvent.click(within(menu).getByRole("menuitem", {
+      name: "Current page as PDF"
+    }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Exported PDF.");
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("status")).toBeNull();
+    }, { timeout: 4000 });
   });
 });

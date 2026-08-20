@@ -346,6 +346,139 @@ fn an_older_file_saying_something_else_still_records_the_loss() {
     assert_eq!(conflicts_for(&transaction, NODE_ID), 1);
 }
 
+/// The same shape as the test above, with one thing changed: the losing line
+/// carries a reading *this* device issued. Then it is this device's own earlier
+/// word arriving back — it wrote the line, edited it since, and the file has not
+/// caught up. Nothing anybody wants back is in it, and the next export settles
+/// it, so the log stays quiet.
+///
+/// This is most of what the log filled with on a machine with one user: the
+/// folder always lags the database a little, and every re-read of a lagging file
+/// used to become an "overwritten note".
+#[test]
+fn a_file_behind_this_devices_own_edit_records_nothing() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, DEVICE), "What it says now")],
+            &stamp(9, DEVICE),
+        )),
+        &input(),
+        None,
+    )
+    .expect("seed");
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(7, DEVICE), "What it said before")],
+            &stamp(7, DEVICE),
+        )),
+        &input(),
+        None,
+    )
+    .expect("older");
+
+    assert_eq!(
+        outcome.conflicts_recorded, 0,
+        "this device's own earlier word is not a version somebody lost"
+    );
+    assert_eq!(conflicts_for(&transaction, NODE_ID), 0);
+    assert!(
+        outcome.needs_write_back,
+        "the file is still behind, and the rewrite is what settles it"
+    );
+}
+
+/// And an equal stamp from another device keeps its entry. `same_t` means
+/// somebody changed the line without restamping it, and which side is right is
+/// exactly what cannot be worked out here — so it is the reader's to judge, and
+/// narrowing the log must not touch it.
+///
+/// An equal stamp naming *this* device does not reach here at all: `decide` reads
+/// it as authoring and adopts the file, which is a separate hole — that branch
+/// records nothing either, and it is the one that loses text rather than merely
+/// keeping quiet about a lagging file.
+#[test]
+fn an_equal_stamp_from_another_device_still_records_the_loss() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "aaa")],
+            &stamp(9, "a3f2a3f2"),
+        )),
+        &input(),
+        None,
+    )
+    .expect("seed");
+
+    // The same reading under different words, which is a hand edit however it
+    // got there. The digest tie-break decides, and whichever way it falls the
+    // pair is recorded.
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "bbb")],
+            &stamp(9, "a3f2a3f2"),
+        )),
+        &input(),
+        None,
+    )
+    .expect("same stamp");
+
+    assert_eq!(outcome.conflicts_recorded, 1);
+    assert_eq!(conflicts_for(&transaction, NODE_ID), 1);
+}
+
+/// Which file the losing version came from. Without it a row says two versions
+/// disagreed and nothing about where either came from, and the generation of the
+/// file that carried it is gone by the time anybody reads the row.
+#[test]
+fn a_recorded_defeat_says_which_file_it_came_from() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "First")],
+            &stamp(9, "a3f2a3f2"),
+        )),
+        &input(),
+        None,
+    )
+    .expect("seed");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(7, "a3f2a3f2"), "Stale")],
+            &stamp(7, "a3f2a3f2"),
+        )),
+        &input(),
+        None,
+    )
+    .expect("older");
+
+    let recorded: String = transaction
+        .query_row(
+            "SELECT file_path FROM sync_conflict_log WHERE node_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("the defeat");
+
+    assert_eq!(recorded, input().file_path);
+}
+
 #[test]
 fn a_loser_is_recorded_once_in_the_conflict_log() {
     let mut connection = database();

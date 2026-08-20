@@ -886,6 +886,57 @@ body.is-resizing-pane {
   color: var(--text-1);
 }
 
+/* Instant hover tooltip for action and navigation buttons */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-card);
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  line-height: 1.2;
+  white-space: nowrap;
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 80ms ease, visibility 80ms ease;
+  z-index: 10000;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+[data-tooltip-align="right"]::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+[data-tooltip-align="left"]::after {
+  left: 0;
+  right: auto;
+  transform: none;
+}
+
+[data-tooltip][data-popup-open]::after,
+[data-tooltip][aria-expanded="true"]::after {
+  display: none;
+}
+
 /* Collapsing is a desktop-only affordance: below 981px the responsive layouts
    redefine the grid and hide these toggles, so the content-hiding rules are
    scoped to the desktop breakpoint to avoid blanking a reserved column. */
@@ -1041,6 +1092,71 @@ body.is-resizing-pane {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.statusbar-zoom-control {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  overflow: visible;
+}
+
+.statusbar-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.statusbar-zoom-btn:hover:not(:disabled) {
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+.statusbar-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.statusbar-zoom-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.statusbar-zoom-label:disabled {
+  cursor: default;
+  color: var(--text-2);
+}
+
+.statusbar-zoom-label:not(:disabled):hover {
+  background: var(--bg-active);
+  color: var(--accent);
+}
+
+.app-statusbar [data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 6px);
 }
 
 .statusbar-state {

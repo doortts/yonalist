@@ -566,6 +566,7 @@ const previewConflicts: SyncConflict[] = [
     seq: 2,
     nodeId: "Nd0000000001",
     reason: "lww",
+    filePath: "pages/Today.md",
     recordedAt: 1_755_500_100,
     kept: {
       text: "Ship the merge audit log this week",
@@ -586,6 +587,7 @@ const previewConflicts: SyncConflict[] = [
     seq: 1,
     nodeId: "Nd0000000002",
     reason: "same_t",
+    filePath: "pages/Today.md",
     recordedAt: 1_755_413_100,
     kept: {
       text: "Call the dentist on Friday",

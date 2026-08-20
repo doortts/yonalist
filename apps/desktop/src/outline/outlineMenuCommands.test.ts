@@ -102,7 +102,8 @@ function context(overrides: {
       duplicate: vi.fn(),
       delete: vi.fn(),
       copy: vi.fn(),
-      cut: vi.fn()
+      cut: vi.fn(),
+      setCollapsed: vi.fn()
     }
   };
 }

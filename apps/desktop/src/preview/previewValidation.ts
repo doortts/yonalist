@@ -139,7 +139,13 @@ export function validatePreviewBatch(
         )
         .sort(bySiblingOrder);
       const currentIndex = siblings.findIndex((node) => node.id === current.id);
+      // notes-core answers DomainError::Invariant "only bullet titles can be
+      // merged" here. Without the pair, this backend drops the previous row
+      // outright -- no soft delete, no Trash -- so a picture behind the caret
+      // would lose its attachment where the real one only refuses.
       const eligible = current.parentId !== null &&
+        current.kind === "bullet" &&
+        previous.kind === "bullet" &&
         previous.parentId === current.parentId &&
         previous.note.trim().length === 0 &&
         !nodes.some((node) => node.parentId === previous.id && !node.deleted) &&

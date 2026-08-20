@@ -126,6 +126,7 @@ export type OutlineKeyIntent =
        */
       readonly step?: boolean;
     }
+  | { readonly kind: "setCollapsed"; readonly collapsed: boolean }
   | { readonly kind: "consume" };
 
 export interface SupportingNoteKeyInput {
@@ -160,6 +161,18 @@ function moveDirection(input: OutlineKeyInput): "up" | "down" | null {
   if (!input.shiftKey || !modifier) return null;
   if (input.key === "ArrowUp") return "up";
   if (input.key === "ArrowDown") return "down";
+  return null;
+}
+
+function foldDirection(input: OutlineKeyInput): boolean | null {
+  if (input.shiftKey || !primaryModifier(input)) return null;
+  if (!input.altKey) {
+    if (input.key === "ArrowUp") return true;
+    if (input.key === "ArrowDown") return false;
+    return null;
+  }
+  if (input.key === "[") return true;
+  if (input.key === "]") return false;
   return null;
 }
 
@@ -291,27 +304,13 @@ export function resolveOutlineKey(
     return input.repeat ? { kind: "consume" } : { kind: "focusNote" };
   }
 
-  // The ends of the outline, not the ends of the row's own text: the chord runs
-  // to the top of the page or to its last row, and answers from the title as
-  // readily as from a row. Shift with the same modifier moves rows instead.
-  if (
-    (input.key === "ArrowUp" || input.key === "ArrowDown") &&
-    !input.shiftKey &&
-    !input.altKey &&
-    primaryModifier(input)
-  ) {
-    if (input.repeat) return { kind: "consume" };
-    const last = input.key === "ArrowDown"
-      ? input.visibleNodes.at(-1)
-      : undefined;
-    return last
-      ? { kind: "focus", nodeId: last.id, edge: "end" }
-      : {
-          kind: "focus",
-          nodeId: input.pageId,
-          edge: input.key === "ArrowUp" ? "start" : "end",
-          fallbackNodeId: input.visibleNodes[0]?.id
-        };
+  // Fold and expand shortcuts: Workflowy/Logseq primary (Cmd+Up/Down) and
+  // editor alias (Cmd+Option+[/]). A row takes the gesture; a page title
+  // or a held repeat simply swallows it.
+  const foldCollapsed = foldDirection(input);
+  if (foldCollapsed !== null) {
+    if (input.repeat || input.target === "page") return { kind: "consume" };
+    return { kind: "setCollapsed", collapsed: foldCollapsed };
   }
 
   if (input.target === "row") {
@@ -690,10 +689,17 @@ export function resolveOutlineKey(
     ) {
       return { kind: "mergeIntoParent", parentId: previous.id };
     }
+    // A picture above is refused too, though this merge runs the other way
+    // than the one above it: the row behind the caret is read for text and then
+    // dropped, so a picture there would paste its filename onto the head of the
+    // line and lose its row out from under the attachment. notes-core refuses
+    // the command regardless -- only bullet titles merge -- so sending it only
+    // ever bought a flash of the filename and a silent rollback.
     if (
       current &&
       previous &&
       current.parentId === previous.parentId &&
+      previous.kind === "bullet" &&
       previous.note.trim().length === 0 &&
       !(input.structureIndex?.hasChildren(previous.id) ??
         structureNodes.some((node) => node.parentId === previous.id))

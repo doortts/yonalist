@@ -194,6 +194,28 @@ pub struct SqliteStorage {
     worker: Option<JoinHandle<()>>,
 }
 
+/// Which writer this is, for `device_seed`. The database's own place, made
+/// absolute so the same file reached two ways is one writer, and normalised so
+/// two spellings of one Korean folder name are too.
+///
+/// The directory is resolved rather than the file: the file may not exist yet on
+/// a first open, and the directory it goes in always does. An in-memory database
+/// has no place at all — every one of them is its own writer for as long as it
+/// lives, and none of them outlives the process to disagree with anything.
+fn device_scope(location: &DatabaseLocation) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
+    let DatabaseLocation::File(path) = location else {
+        return ":memory:".to_owned();
+    };
+    let resolved = path
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok())
+        .map(|parent| parent.join(path.file_name().unwrap_or_default()))
+        .unwrap_or_else(|| path.clone());
+    resolved.to_string_lossy().nfc().collect()
+}
+
 /// What to write, given what the machine would say. Separated from the query so
 /// the refusal can be exercised: on a Mac the seed is always there, and the case
 /// worth pinning is the one that cannot be reached from a test.
@@ -219,10 +241,12 @@ fn provisioned_device_id(seed: Option<String>) -> Result<String, StorageError> {
 /// Never changed after that: a device that renamed itself would look like a
 /// different one to every merge.
 ///
-/// The value is derived from the machine rather than drawn at random, so a
-/// database rebuilt here is this device again rather than a new one arguing with
-/// the stamps its own vault still holds.
-fn ensure_device_id(connection: &Connection) -> Result<String, StorageError> {
+/// The value is derived from the machine and from where this database sits
+/// rather than drawn at random, so a database rebuilt in the same place is this
+/// device again rather than a new one arguing with the stamps its own vault
+/// still holds — and a second database elsewhere on the same Mac is honestly a
+/// second device rather than a twin of the first.
+fn ensure_device_id(connection: &Connection, scope: &str) -> Result<String, StorageError> {
     let existing: Option<String> = connection
         .query_row(
             "SELECT device_id FROM sync_meta WHERE singleton = 1",
@@ -234,7 +258,7 @@ fn ensure_device_id(connection: &Connection) -> Result<String, StorageError> {
     if let Some(device_id) = existing {
         return Ok(device_id);
     }
-    let device_id = provisioned_device_id(notes_sync::hlc::device_seed())?;
+    let device_id = provisioned_device_id(notes_sync::hlc::device_seed(scope))?;
     let vault_uuid = uuid::Uuid::new_v4().to_string();
     // Two processes can both find it empty; the one that loses reads back what
     // the other wrote rather than failing the open on the singleton key.
@@ -579,6 +603,7 @@ impl SqliteStorage {
                 if let DatabaseLocation::File(path) = &location {
                     schema::remake_if_an_older_build_made_it(path);
                 }
+                let scope = device_scope(&location);
                 let connection = match location {
                     DatabaseLocation::File(path) => Connection::open(path),
                     DatabaseLocation::Memory => Connection::open_in_memory(),
@@ -590,7 +615,7 @@ impl SqliteStorage {
                     // exist to read the device from, and the stamping triggers
                     // call `yona_hlc()` on every insert after this point.
                     let clock = Arc::new(
-                        Clock::new(&ensure_device_id(&connection)?)
+                        Clock::new(&ensure_device_id(&connection, &scope)?)
                             .map_err(StorageError::Internal)?,
                     );
                     hlc::register(&connection, Arc::clone(&clock))
@@ -653,14 +678,15 @@ impl SqliteStorage {
                             ));
                         }
                         Request::SetDeviceName { name, reply } => {
-                            let _ =
-                                reply.send(ensure_device_id(&connection).and_then(|device_id| {
+                            let _ = reply.send(ensure_device_id(&connection, &scope).and_then(
+                                |device_id| {
                                     crate::sync_merge::set_device_name(
                                         &connection,
                                         &device_id,
                                         &name,
                                     )
-                                }));
+                                },
+                            ));
                         }
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));

@@ -740,16 +740,18 @@ fn sync_meta_is_seeded_once_with_a_stable_device_id() {
     );
 }
 
-/// A vault outlives a database. Rebuilding one here used to draw a fresh random
-/// device id, and the files still sitting in the vault then held two generations
-/// of stamps arguing with each other over notes one person wrote — every merge
-/// reading the older generation as somebody else's device.
+/// A vault outlives a database, so the id has to be stable — but it identifies a
+/// *writer*, and two databases are two writers. Both used to matter and only the
+/// first was kept, which is how the app and a build verifying against the same
+/// folder came to stamp as one device: each one's files then carried the other's
+/// identity, and `decide` adopts a file's content over a row's on a device match
+/// without recording anything.
 ///
-/// The vault id is the opposite case and has to keep differing: two databases
-/// are two vaults until one is told to be the other.
+/// Same place, same device — pinned by `a_database_provisioned_here_twice_is_one_device`
+/// below, which is the stability half. Here is the distinctness half.
 #[cfg(target_os = "macos")]
 #[test]
-fn two_databases_on_one_machine_are_one_device() {
+fn two_databases_in_two_places_are_two_devices() {
     let (_first_directory, first_database) = workspace();
     let (_second_directory, second_database) = workspace();
     drop(open(&first_database));
@@ -765,11 +767,50 @@ fn two_databases_on_one_machine_are_one_device() {
     let (first_device, first_vault) = read(&first_database);
     let (second_device, second_vault) = read(&second_database);
 
-    assert_eq!(
+    assert_ne!(
         first_device, second_device,
-        "a database rebuilt on this machine has to stamp as the same device"
+        "two databases are two writers, and a shared id has one silently take the other's text"
     );
-    assert_ne!(first_vault, second_vault, "but not as the same vault");
+    assert_ne!(
+        first_vault, second_vault,
+        "and two vaults until told otherwise"
+    );
+    for device in [&first_device, &second_device] {
+        assert!(
+            notes_sync::hlc::is_device_id(device),
+            "`{device}` is not a device id the stamp encoding can carry"
+        );
+    }
+}
+
+/// The stability half: a database made again where the old one sat is this
+/// device again, not a newcomer arguing with the stamps its own vault holds.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_database_provisioned_here_twice_is_one_device() {
+    let (_directory, database) = workspace();
+    drop(open(&database));
+    let read = || -> String {
+        inspect(&database)
+            .query_row("SELECT device_id FROM sync_meta", [], |row| row.get(0))
+            .expect("sync_meta")
+    };
+    let first = read();
+
+    // As a reinstall would leave it: the notes are in the vault, the database is
+    // gone.
+    for suffix in ["", "-wal", "-shm"] {
+        let mut beside = database.as_os_str().to_owned();
+        beside.push(suffix);
+        let _ = std::fs::remove_file(std::path::PathBuf::from(beside));
+    }
+    drop(open(&database));
+
+    assert_eq!(
+        first,
+        read(),
+        "the same place on the same Mac is the same writer"
+    );
 }
 
 #[test]

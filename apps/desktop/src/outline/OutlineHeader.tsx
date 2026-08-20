@@ -124,6 +124,8 @@ export function OutlineHeader({
               className="notes-breadcrumb-button notes-breadcrumb-home"
               type="button"
               aria-label="All pages"
+              data-tooltip="All pages"
+              data-tooltip-align="left"
               aria-current={atRoot && !zoomed ? "page" : undefined}
               disabled={atRoot && !zoomed}
               onClick={atRoot ? onBack : onHome}
@@ -158,13 +160,22 @@ export function OutlineHeader({
           className="notes-completed-toggle"
           type="button"
           aria-label="Completed items"
+          data-tooltip={showCompleted ? "Hide completed items" : "Show completed items"}
+          data-tooltip-align="right"
           aria-pressed={showCompleted}
           onClick={onToggleCompleted}
         >
           <Check size={16} aria-hidden="true" />
         </button>
         {onClose && (
-          <button className="notes-completed-toggle" type="button" aria-label="Close split" onClick={onClose}>
+          <button
+            className="notes-completed-toggle"
+            type="button"
+            aria-label="Close split"
+            data-tooltip="Close split"
+            data-tooltip-align="right"
+            onClick={onClose}
+          >
             <X size={16} aria-hidden="true" />
           </button>
         )}
@@ -242,6 +253,8 @@ export function OutlinePageHeading({
             className="notes-bullet-menu-trigger"
             type="button"
             aria-label={`Actions for ${target.text || "Untitled"}`}
+            data-tooltip="Page actions"
+            data-tooltip-align="left"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             data-popup-open={menuOpen ? "true" : undefined}

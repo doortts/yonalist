@@ -1,4 +1,4 @@
-import { House, Plus, Search, Settings } from "lucide-react";
+import { House, Minus, Plus, Search, Settings } from "lucide-react";
 import {
   lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState,
   useSyncExternalStore, type CSSProperties
@@ -17,7 +17,15 @@ import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
 import { LibraryPageRow } from "./LibraryPageRow";
 import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
-import { nudgePageZoom, pageZoomStep } from "./pageZoom";
+import {
+  MAX_ZOOM_PERCENT,
+  MIN_ZOOM_PERCENT,
+  nudgePageZoom,
+  pageZoomStep,
+  resetPageZoom,
+  STEP,
+  usePageZoom
+} from "./pageZoom";
 import {
   isDevtoolsShortcut, isDragDebugShortcut, toggleDevtools
 } from "./devtools";
@@ -117,6 +125,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     useState<PaneRestoreRequest | null>(null);
   const [paneSelections, setPaneSelections] =
     useState({ primary: 0, secondary: 0 });
+  const pageZoom = usePageZoom();
   const resizeStart = useRef<{ x: number; width: number } | null>(null);
   const applyNavigationRef = useRef<
     (location: AppNavigationLocation) => Promise<void>
@@ -710,6 +719,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 className="notes-library-icon-button"
                 type="button"
                 aria-label="Search"
+                data-tooltip="Search"
+                data-tooltip-align="left"
                 aria-expanded={false}
                 aria-keyshortcuts="Meta+F Control+F"
                 onClick={() => setSearchOpen(true)}
@@ -744,9 +755,11 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
               <button
                 className="primary-button notes-new-page"
                 type="button"
-                  disabled={state.status === "loading"}
-                  aria-keyshortcuts="Meta+N Control+N"
-                  onClick={createPage}
+                disabled={state.status === "loading"}
+                aria-keyshortcuts="Meta+N Control+N"
+                data-tooltip="New page"
+                data-tooltip-align="left"
+                onClick={createPage}
               >
                 <Plus size={16} aria-hidden="true" />
                 <span>New page</span>
@@ -823,6 +836,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             type="button"
             aria-pressed={settingsOpen}
             aria-keyshortcuts="Meta+Comma Control+Comma"
+            data-tooltip="Settings"
+            data-tooltip-align="left"
             onPointerDown={() => {
               if (!settingsOpen) rememberSettingsReturn();
             }}
@@ -932,6 +947,41 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           {selectedCount > 0 && (
             <span className="statusbar-selection">{selectedCount} selected</span>
           )}
+          <div className="statusbar-zoom-control" role="group" aria-label="Page zoom">
+            <button
+              className="statusbar-zoom-btn"
+              type="button"
+              aria-label="Zoom out"
+              data-tooltip="Zoom out"
+              data-tooltip-align="right"
+              disabled={pageZoom <= MIN_ZOOM_PERCENT}
+              onClick={() => void nudgePageZoom(-STEP)}
+            >
+              <Minus size={12} aria-hidden="true" />
+            </button>
+            <button
+              className="statusbar-zoom-label"
+              type="button"
+              aria-label={`Zoom level ${pageZoom}%. ${pageZoom !== 100 ? "Click to reset to 100%" : ""}`.trim()}
+              data-tooltip={pageZoom !== 100 ? "Reset zoom to 100%" : undefined}
+              data-tooltip-align="right"
+              disabled={pageZoom === 100}
+              onClick={() => void resetPageZoom()}
+            >
+              {pageZoom}%
+            </button>
+            <button
+              className="statusbar-zoom-btn"
+              type="button"
+              aria-label="Zoom in"
+              data-tooltip="Zoom in"
+              data-tooltip-align="right"
+              disabled={pageZoom >= MAX_ZOOM_PERCENT}
+              onClick={() => void nudgePageZoom(STEP)}
+            >
+              <Plus size={12} aria-hidden="true" />
+            </button>
+          </div>
           <span className="statusbar-state">Online</span>
         </div>
       </footer>
