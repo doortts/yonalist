@@ -42,6 +42,54 @@ describe("receipt state", () => {
       .toEqual(["z-parent", "a-child"]);
   });
 
+  it("lets go of a row a receipt moved onto another page", () => {
+    const result = receiptState({
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session",
+      activePageId: "page",
+      pages: [
+        { id: "page", title: "Page", sortKey: 1_024 },
+        { id: "other-page", title: "Other", sortKey: 2_048 }
+      ],
+      nodes: [
+        bullet("kept", "page"),
+        bullet("leaving", "page"),
+        bullet("under-leaving", "leaving")
+      ]
+    }, {
+      revision: 2,
+      // What an undone carry-over sends back, and what Move To... sends: the
+      // row is alive, on a page this one is not showing.
+      changedNodes: [bullet("leaving", "other-page")],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+
+    // The row under it went where it went, whether or not the receipt named it.
+    expect(result.patch.nodes?.map((node) => node.id)).toEqual(["kept"]);
+  });
+
+  it("keeps the page's rows when the receipt carries the page's own node", () => {
+    const result = receiptState({
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session",
+      activePageId: "page",
+      pages: [{ id: "page", title: "Page", sortKey: 1_024 }],
+      nodes: [bullet("row", "page")]
+    }, {
+      revision: 2,
+      // A page node lives under the root, which is not the page it is: it is
+      // not a row that left, and its rows did not leave with it.
+      changedNodes: [bullet("page", ROOT_ID)],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+
+    expect(result.patch.nodes?.map((node) => node.id)).toEqual(["row"]);
+  });
+
   it("classifies text receipts as node-only invalidations", () => {
     const original = bullet("one", "page");
     const result = receiptState({

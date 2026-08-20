@@ -1,8 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { SearchHit } from "../../../packages/contracts/generated/SearchHit";
 import type { NotesStore } from "./notesStore";
-import { journalDateOf } from "./journal";
-import { useNotesNode } from "./useNotesNode";
 
 /**
  * The rows elsewhere that name this day. Nothing new is indexed for this: a
@@ -13,10 +11,12 @@ import { useNotesNode } from "./useNotesNode";
 export function JournalReferences({
   store,
   pageId,
+  date,
   onOpenPage
 }: {
   readonly store: NotesStore;
   readonly pageId: string;
+  readonly date: string;
   readonly onOpenPage: (pageId: string) => void;
 }) {
   const shell = useSyncExternalStore(
@@ -24,16 +24,11 @@ export function JournalReferences({
     store.getShellSnapshot,
     store.getShellSnapshot
   );
-  const date = journalDateOf(useNotesNode(store, pageId).title);
   const [hits, setHits] = useState<readonly SearchHit[]>([]);
   // Re-read on every revision: a row written on another page while this day is
   // open is exactly the row this list exists to show.
   const revision = shell.revision;
   useEffect(() => {
-    if (!date) {
-      setHits([]);
-      return () => undefined;
-    }
     let active = true;
     void store.search(`date:${date}`).then(
       (page) => {
@@ -50,7 +45,6 @@ export function JournalReferences({
     };
   }, [date, revision, store]);
 
-  if (!date) return null;
   const elsewhere = hits.filter((hit) => hit.pageId !== pageId);
   return (
     <section className="notes-journal-references" aria-label="Linked references">

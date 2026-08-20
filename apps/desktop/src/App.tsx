@@ -299,7 +299,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     ? { id: ROOT_ID, title: "" }
     : state.pages.find((page) => page.id === state.activePageId) ??
       (state.provisionalPageId === state.activePageId && state.activePageId
-        ? { id: state.activePageId, title: "" }
+        // A page nobody has written in has no row to read a title off, and a
+        // journal day opens with one already decided: the node the store is
+        // holding for it is where that title is.
+        ? {
+          id: state.activePageId,
+          title: store.getNodeSnapshot(state.activePageId).title
+        }
         : undefined);
   const captureNavigation = useCallback((): AppNavigationLocation => {
     const primary = capturePane("primary");

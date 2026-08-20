@@ -6,6 +6,7 @@ import {
 } from "./NotesOutline";
 import { JournalReferences } from "./JournalReferences";
 import { JournalDayBar } from "./JournalDayBar";
+import { useJournalDate } from "./useJournalDate";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import type { NotesShellSnapshot } from "./store/storeSubscriptions";
 import { useSplitResize } from "./useSplitResize";
@@ -59,6 +60,10 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onSelectionCountChange
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
+  // The day the primary pane is on, if it is a day at all. It decides the
+  // bar above the rows, the references under them, and whether the pane is
+  // a stack rather than one outline filling it.
+  const journalDate = useJournalDate(store, page?.id);
   return (
     <section className="detail-pane" aria-label="Detail">
       <div className="pane-titlebar-spacer" />
@@ -76,12 +81,14 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
         >
           <div
             className="notes-detail-pane"
+            data-journal={journalDate ? "true" : undefined}
             style={{ overflowY: splitOpen ? "auto" : undefined }}
           >
-            {page && (
+            {page && journalDate && (
               <JournalDayBar
                 store={store}
                 pageId={page.id}
+                date={journalDate}
                 onOpenDay={onOpenDay}
               />
             )}
@@ -101,10 +108,11 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
               onDateClick={onDateClick}
               onSelectionCountChange={onSelectionCountChange}
             />
-            {page && (
+            {page && journalDate && (
               <JournalReferences
                 store={store}
                 pageId={page.id}
+                date={journalDate}
                 onOpenPage={onOpenPage}
               />
             )}

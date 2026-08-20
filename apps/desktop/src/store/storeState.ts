@@ -60,9 +60,43 @@ export function receiptState(
   const previousById = new Map(state.nodes.map((node) => [node.id, node]));
   const changedById = new Map(receipt.changedNodes.map((node) => [node.id, node]));
   const removed = new Set(receipt.deletedIds);
+  const pageIds = new Set(state.pages.map((page) => page.id));
+  /**
+   * A row the receipt has put on another page has left this one, and a row
+   * under it left with it. Only a *page* counts as elsewhere: a viewport is a
+   * window over one page's rows and can hold a child whose parent has not been
+   * loaded yet, so an unknown bullet parent says nothing about where the row
+   * lives. This is what an undone carry-over sends back, and what `Move To...`
+   * sends when it takes a row to another page.
+   */
+  const departed = new Set(
+    receipt.changedNodes
+      // Body rows only. The page's own node rides along in receipts and sits
+      // under the root by definition; reading it as a row that left would
+      // take every row on the page with it.
+      .filter((node) => previousById.has(node.id) &&
+        node.parentId !== null &&
+        node.parentId !== state.activePageId &&
+        (pageIds.has(node.parentId) || node.parentId === ROOT_ID))
+      .map((node) => node.id)
+  );
+  if (departed.size > 0) {
+    let following = true;
+    while (following) {
+      following = false;
+      for (const node of state.nodes) {
+        if (node.parentId !== null && departed.has(node.parentId) &&
+          !departed.has(node.id)) {
+          departed.add(node.id);
+          following = true;
+        }
+      }
+    }
+  }
   const nodes = state.nodes
     .map((node) => changedById.get(node.id) ?? node)
-    .filter((node) => !removed.has(node.id) && !node.deleted);
+    .filter((node) => !removed.has(node.id) && !node.deleted &&
+      !departed.has(node.id));
   const known = new Set(nodes.map((node) => node.id));
   let pending = receipt.changedNodes.filter((node) =>
     node.id !== ROOT_ID && !node.deleted && !known.has(node.id));

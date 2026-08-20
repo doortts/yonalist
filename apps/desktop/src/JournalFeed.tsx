@@ -3,6 +3,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import { NotesOutline, type PaneRestoreRequest } from "./NotesOutline";
 import { JournalReferences } from "./JournalReferences";
+import { useJournalDate } from "./useJournalDate";
 import type { JournalDay } from "./journal";
 import { weekdayOf } from "./journal";
 import { parseOutlinePresentation } from "./outline/outlinePresentation";
@@ -209,11 +210,15 @@ export function JournalFeed({
     count: number
   ) => void;
 }) {
+  const journalDate = useJournalDate(store, page?.id);
   return (
     <section className="detail-pane notes-journal-feed" aria-label="Journals">
       <div className="pane-titlebar-spacer" />
       <div className="detail-scroll">
-        <div className="notes-detail-pane">
+        <div
+          className="notes-detail-pane"
+          data-journal={journalDate ? "true" : undefined}
+        >
           <NotesOutline
             store={store}
             status={status}
@@ -229,10 +234,11 @@ export function JournalFeed({
             restoreRequest={restoreRequest}
             onSelectionCountChange={onSelectionCountChange}
           />
-          {page && (
+          {page && journalDate && (
             <JournalReferences
               store={store}
               pageId={page.id}
+              date={journalDate}
               onOpenPage={onOpenPage}
             />
           )}

@@ -616,6 +616,10 @@
 
 .notes-detail-pane {
   display: flex;
+  /* A column, because a day page stacks: the day bar above its rows and the
+     linked references below them. With one child -- every page that is not a
+     day -- the outline fills the pane either way. */
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -4015,6 +4019,14 @@ body.is-outline-dragging * {
  * they are drawn rather than built out of rows: no bullets to drag, no
  * fields to focus, and a heading that is the way into the day itself.
  * ------------------------------------------------------------------ */
+/* On a day page the outline is one of three things stacked in the pane, so it
+   takes the height its rows need instead of the whole pane: otherwise the
+   references sit a screen below the rows they belong to. */
+.notes-detail-pane[data-journal="true"] .notes-outline {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
 .notes-journal-earlier {
   display: flex;
   flex-direction: column;

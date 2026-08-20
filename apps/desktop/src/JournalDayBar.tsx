@@ -2,9 +2,8 @@ import { ArrowDownToLine, ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
-import { journalDateOf, journalDays, shiftDay, weekdayOf } from "./journal";
+import { journalDays, shiftDay, weekdayOf } from "./journal";
 import { carryOverDays, carryOverRows } from "./journalCarryOver";
-import { useNotesNode } from "./useNotesNode";
 
 /** `8/23`, the short way a day is named when it is only a direction. */
 function shortDay(date: string): string {
@@ -23,15 +22,15 @@ function shortDay(date: string): string {
 export function JournalDayBar({
   store,
   pageId,
+  date,
   onOpenDay
 }: {
   readonly store: NotesStore;
   readonly pageId: string;
+  readonly date: string;
   readonly onOpenDay: (date: string) => void;
 }) {
-  const date = journalDateOf(useNotesNode(store, pageId).title);
   const carried = useCarryOverRows(store, date, pageId);
-  if (!date) return null;
   const previous = shiftDay(date, -1);
   const next = shiftDay(date, 1);
   return (
@@ -83,7 +82,7 @@ export function JournalDayBar({
  */
 function useCarryOverRows(
   store: NotesStore,
-  date: string | null,
+  date: string,
   pageId: string
 ): readonly NoteView[] {
   const shell = useSyncExternalStore(
@@ -92,12 +91,10 @@ function useCarryOverRows(
     store.getShellSnapshot
   );
   const [rows, setRows] = useState<readonly NoteView[]>([]);
-  const dayIds = date
-    ? carryOverDays(journalDays(shell.pages), date)
-      .filter((day) => day.id !== pageId)
-      .map((day) => day.id)
-      .join(" ")
-    : "";
+  const dayIds = carryOverDays(journalDays(shell.pages), date)
+    .filter((day) => day.id !== pageId)
+    .map((day) => day.id)
+    .join(" ");
   const revision = shell.revision;
   useEffect(() => {
     if (dayIds.length === 0) {
