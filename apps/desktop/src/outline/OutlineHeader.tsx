@@ -162,6 +162,7 @@ export function OutlineHeader({
           aria-label="Completed items"
           data-tooltip={showCompleted ? "Hide completed items" : "Show completed items"}
           data-tooltip-align="right"
+          data-active={!showCompleted ? "true" : undefined}
           aria-pressed={showCompleted}
           onClick={onToggleCompleted}
         >

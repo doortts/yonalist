@@ -1142,12 +1142,22 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-3);
+  transition: color 120ms ease, background-color 120ms ease;
 }
 
-.notes-completed-toggle:hover,
-.notes-completed-toggle[aria-pressed="false"] {
+.notes-completed-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-1);
+}
+
+.notes-completed-toggle[data-active="true"] {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.notes-completed-toggle[data-active="true"]:hover {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 22%, transparent);
 }
 
 .notes-completed-toggle:disabled {

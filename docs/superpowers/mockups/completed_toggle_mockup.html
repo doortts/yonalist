@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yonalist - Hide/Show Completed Button 시안</title>
+  <style>
+    :root[data-theme="dark"] {
+      --bg-app: #121418;
+      --bg-sidebar: #181a1f;
+      --bg-detail: #15171c;
+      --bg-card: #1c1f26;
+      --bg-hover: rgba(255, 255, 255, 0.08);
+      --bg-active: rgba(255, 255, 255, 0.15);
+      --border: #2c303a;
+      --border-strong: #3e4452;
+      --border-subtle: rgba(255, 255, 255, 0.1);
+      --text-1: #e7eaef;
+      --text-2: #a4acb9;
+      --text-3: #757f8e;
+      --accent: #539bf5;
+      --accent-soft: rgba(83, 155, 245, 0.15);
+      --success: #57ab5a;
+      --success-soft: rgba(87, 171, 90, 0.15);
+      --warning: #e3b341;
+      --warning-soft: rgba(227, 179, 65, 0.15);
+      --danger: #f47067;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    :root[data-theme="light"] {
+      --bg-app: #f0f2f5;
+      --bg-sidebar: #e9ecef;
+      --bg-detail: #ffffff;
+      --bg-card: #ffffff;
+      --bg-hover: rgba(17, 24, 39, 0.06);
+      --bg-active: rgba(17, 24, 39, 0.12);
+      --border: #dcdfe4;
+      --border-strong: #c2c7d0;
+      --border-subtle: rgba(0, 0, 0, 0.1);
+      --text-1: #1f2328;
+      --text-2: #59626e;
+      --text-3: #8c95a1;
+      --accent: #2563eb;
+      --accent-soft: rgba(37, 99, 235, 0.09);
+      --success: #2da44e;
+      --success-soft: rgba(45, 164, 78, 0.12);
+      --warning: #b08800;
+      --warning-soft: rgba(176, 136, 0, 0.12);
+      --danger: #c2402a;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-app);
+      color: var(--text-1);
+      min-height: 100vh;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .header-bar {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+    }
+
+    .header-title h1 {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .header-title p {
+      font-size: 13px;
+      color: var(--text-2);
+      margin-top: 3px;
+    }
+
+    .theme-toggle-btn {
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    /* Option Tabs */
+    .option-tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      width: 100%;
+      max-width: 960px;
+    }
+    .tab-btn {
+      padding: 14px;
+      background: var(--bg-card);
+      border: 2px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-2);
+      cursor: pointer;
+      text-align: left;
+      transition: all 150ms ease;
+    }
+    .tab-btn:hover {
+      border-color: var(--border-strong);
+      color: var(--text-1);
+    }
+    .tab-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--text-1);
+    }
+    .tab-btn .badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-bottom: 6px;
+      background: var(--accent);
+      color: white;
+    }
+    .tab-btn .title {
+      font-weight: 650;
+      font-size: 14px;
+      display: block;
+      margin-bottom: 4px;
+    }
+    .tab-btn .desc {
+      font-size: 12px;
+      color: var(--text-3);
+      line-height: 1.4;
+    }
+
+    /* Comparison Box */
+    .comparison-summary {
+      width: 100%;
+      max-width: 960px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--success);
+      border-radius: var(--radius-sm);
+      padding: 12px 18px;
+      font-size: 13px;
+      color: var(--text-2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .comparison-summary strong {
+      color: var(--text-1);
+    }
+
+    /* App Preview Window */
+    .app-preview-window {
+      width: 100%;
+      max-width: 960px;
+      background: var(--bg-detail);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Header Toolbar */
+    .outline-header {
+      height: 44px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      background: var(--bg-detail);
+    }
+
+    .breadcrumb-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .icon-btn {
+      width: 30px;
+      height: 30px;
+      border-radius: var(--radius-sm);
+      border: none;
+      background: transparent;
+      color: var(--text-3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      transition: all 120ms ease;
+    }
+    .icon-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-1);
+    }
+
+    /* Instant CSS Tooltip */
+    [data-tooltip] {
+      position: relative;
+    }
+    [data-tooltip]::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-card);
+      color: var(--text-1);
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+      border: 1px solid var(--border-strong);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 80ms ease, visibility 80ms ease;
+      z-index: 10000;
+    }
+    [data-tooltip]:hover::after {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* STYLE OPTION 1: Accent Color Icon + Subtle Tint (Recommended) */
+    .icon-btn.opt-1-hidden {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .icon-btn.opt-1-hidden:hover {
+      background: rgba(83, 155, 245, 0.25);
+      color: var(--accent);
+    }
+
+    /* STYLE OPTION 2: Accent Icon Only (Clean) */
+    .icon-btn.opt-2-hidden {
+      color: var(--accent);
+      background: transparent;
+    }
+    .icon-btn.opt-2-hidden:hover {
+      background: var(--bg-hover);
+      color: var(--accent);
+    }
+
+    /* STYLE OPTION 3: Success Green Theme */
+    .icon-btn.opt-3-hidden {
+      color: var(--success);
+      background: var(--success-soft);
+    }
+    .icon-btn.opt-3-hidden:hover {
+      background: rgba(87, 171, 90, 0.25);
+      color: var(--success);
+    }
+
+    /* Content Area */
+    .notes-body {
+      padding: 32px 48px;
+      min-height: 280px;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+
+    .page-title {
+      font-size: 26px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: var(--text-1);
+    }
+
+    .removed-message-banner {
+      display: none;
+      background: rgba(244, 112, 103, 0.1);
+      border: 1px dashed var(--danger);
+      color: var(--danger);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      margin-bottom: 16px;
+      text-decoration: line-through;
+    }
+
+    .note-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .note-bullet {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-3);
+      display: inline-block;
+    }
+    .note-checkbox {
+      width: 15px;
+      height: 15px;
+      border: 1.5px solid var(--text-3);
+      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .note-checkbox.checked {
+      background: var(--success);
+      border-color: var(--success);
+      color: white;
+    }
+    .note-text.completed {
+      color: var(--text-3);
+      text-decoration: line-through;
+    }
+
+    .interactive-badge {
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Info Header -->
+  <header class="header-bar">
+    <div class="header-title">
+      <h1>Yonalist - Show/Hide Completed 버튼 개선 시안</h1>
+      <p>본문 상단의 뜬금없는 <code>Completed items are hidden.</code> 메시지를 제거하고, <strong>상단 버튼 아이콘에 강조색</strong>을 적용합니다.</p>
+    </div>
+    <button class="theme-toggle-btn" id="theme-toggle-btn">🌙 다크 모드 전환</button>
+  </header>
+
+  <!-- Option Selection Tabs -->
+  <div class="option-tabs">
+    <button class="tab-btn active" onclick="selectStyle('1')">
+      <span class="badge">시안 1 (추천: 액센트 블루 + 소프트 배경)</span>
+      <span class="title">액센트 블루 아이콘 + 소프트 틴트</span>
+      <span class="desc">완료 항목이 숨겨졌을 때 버튼이 <strong>블루 아이콘 + 은은한 배경</strong>으로 활성화되어 직관적입니다.</span>
+    </button>
+    <button class="tab-btn" onclick="selectStyle('2')">
+      <span class="badge">시안 2 (깔끔한 아이콘 강조)</span>
+      <span class="title">액센트 블루 아이콘만 강조</span>
+      <span class="desc">배경색 없이 <strong>체크마크 아이콘만 블루 컬러</strong>로 선명하게 표시됩니다.</span>
+    </button>
+    <button class="tab-btn" onclick="selectStyle('3')">
+      <span class="badge">시안 3 (석세스 그린 강조)</span>
+      <span class="title">체크 완료 그린 아이콘 + 소프트 틴트</span>
+      <span class="desc">체크박스 완료 색상과 동일한 <strong>그린 컬러</strong>로 상태를 표시합니다.</span>
+    </button>
+  </div>
+
+  <div class="comparison-summary">
+    <div>
+      ✅ <strong>개선 결과:</strong> 본문 영역에 뜨던 <code>Completed items are hidden.</code> 텍스트는 <strong>완전 삭제</strong>되어 본문이 깔끔해집니다.
+    </div>
+    <div style="font-size:12px; color:var(--text-3);">
+      👉 아래 미리보기 창에서 <strong style="color:var(--text-1)">우측 상단 체크 버튼</strong>을 직접 클릭해 보세요!
+    </div>
+  </div>
+
+  <!-- Simulated App Window -->
+  <div class="app-preview-window">
+    <!-- Header Toolbar -->
+    <header class="outline-header">
+      <div class="breadcrumb-row">
+        <span>🏠 All</span>
+        <span style="color:var(--text-3)">/</span>
+        <span style="font-weight:600">버그 리포트</span>
+      </div>
+
+      <div class="header-actions">
+        <button class="icon-btn" data-tooltip="Export as">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+
+        <!-- Completed Toggle Button (The target of this task) -->
+        <button class="icon-btn opt-1-hidden" id="completed-toggle-btn" 
+                data-tooltip="Show completed items"
+                onclick="toggleCompleted()">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
+
+        <button class="icon-btn" data-tooltip="Maximize detail">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Notes Body -->
+    <main class="notes-body">
+      <div class="page-title">• 버그 리포트</div>
+
+      <!-- Old removed text (shown crossed out for illustration if toggled) -->
+      <div class="removed-message-banner" id="old-msg-banner">
+        ❌ (제거됨) Completed items are hidden.
+      </div>
+
+      <div class="note-row">
+        <span class="note-bullet"></span>
+        <span>상단 메뉴 버튼들에 툴팁 즉시 표시 기능 적용</span>
+      </div>
+
+      <div class="note-row">
+        <span class="note-bullet"></span>
+        <span>하단 상태바 Zoom 레벨 상시 표시 적용</span>
+      </div>
+
+      <!-- Completed rows that hide/show -->
+      <div class="note-row completed-item-row" id="completed-row-1" style="display:none;">
+        <span class="note-checkbox checked">✓</span>
+        <span class="note-text completed">우측 상단 툴팁 2중 표시 버그 수정 (완료)</span>
+      </div>
+
+      <div class="note-row completed-item-row" id="completed-row-2" style="display:none;">
+        <span class="note-checkbox checked">✓</span>
+        <span class="note-text completed">Export 완료 메시지 3초 후 자동 사라짐 적용 (완료)</span>
+      </div>
+
+      <div class="note-row">
+        <span class="note-bullet"></span>
+        <span>Show/Hide completed 상단 아이콘 강조 적용 중...</span>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let isCompletedHidden = true;
+    let selectedStyle = '1';
+    let isDark = true;
+
+    function renderButtonState() {
+      const btn = document.getElementById('completed-toggle-btn');
+      const row1 = document.getElementById('completed-row-1');
+      const row2 = document.getElementById('completed-row-2');
+
+      // Clear all style classes
+      btn.className = 'icon-btn';
+
+      if (isCompletedHidden) {
+        // Completed items are HIDDEN (Filter is ON)
+        btn.setAttribute('data-tooltip', 'Show completed items');
+        if (selectedStyle === '1') btn.classList.add('opt-1-hidden');
+        if (selectedStyle === '2') btn.classList.add('opt-2-hidden');
+        if (selectedStyle === '3') btn.classList.add('opt-3-hidden');
+
+        row1.style.display = 'none';
+        row2.style.display = 'none';
+      } else {
+        // Completed items are SHOWN (Normal state)
+        btn.setAttribute('data-tooltip', 'Hide completed items');
+        row1.style.display = 'flex';
+        row2.style.display = 'flex';
+      }
+    }
+
+    function toggleCompleted() {
+      isCompletedHidden = !isCompletedHidden;
+      renderButtonState();
+    }
+
+    function selectStyle(style) {
+      selectedStyle = style;
+      document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
+        btn.classList.toggle('active', ['1', '2', '3'][idx] === style);
+      });
+      renderButtonState();
+    }
+
+    document.getElementById('theme-toggle-btn').addEventListener('click', () => {
+      isDark = !isDark;
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      document.getElementById('theme-toggle-btn').textContent = isDark ? '🌙 다크 모드' : '☀️ 라이트 모드';
+    });
+
+    // Initial render
+    renderButtonState();
+  </script>
+</body>
+</html>

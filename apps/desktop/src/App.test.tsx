@@ -1545,6 +1545,7 @@ describe("Yonalist v2 desktop shell", () => {
     expect(completedButton).toHaveAttribute("data-tooltip-align", "right");
     expect(completedButton).not.toHaveAttribute("title");
     expect(completedButton).toHaveAttribute("aria-pressed", "true");
+    expect(completedButton).not.toHaveAttribute("data-active");
 
     fireEvent.click(completedButton);
 
@@ -1552,12 +1553,13 @@ describe("Yonalist v2 desktop shell", () => {
     expect(completedButton).toHaveAttribute("data-tooltip-align", "right");
     expect(completedButton).not.toHaveAttribute("title");
     expect(completedButton).toHaveAttribute("aria-pressed", "false");
+    expect(completedButton).toHaveAttribute("data-active", "true");
 
     expect(screen.queryByDisplayValue("First thought")).toBeNull();
     expect(screen.getAllByRole("group", { name: "Note text" }).some(
       (presentation) => presentation.textContent === "Second thought"
     )).toBe(true);
-    expect(screen.getByText("Completed items are hidden.")).toBeVisible();
+    expect(screen.queryByText("Completed items are hidden.")).toBeNull();
   });
 
   it("loads Trash through the indexed search endpoint", async () => {
