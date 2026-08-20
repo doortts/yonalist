@@ -671,8 +671,7 @@ export function resolveOutlineKey(
     input.selectionEnd === 0 &&
     input.value.trim().length > 0
   ) {
-    const index = input.visibleIndex?.positionOf(input.nodeId) ??
-      input.visibleNodes.findIndex((node) => node.id === input.nodeId);
+    const index = visiblePositionOf(input, input.nodeId);
     const current = nodeById(
       structureNodes,
       input.nodeId,

@@ -1411,7 +1411,8 @@ describe("v2 outline keyboard intent resolver", () => {
       nodeId: "child",
       value: "Child",
       selectionStart: 0,
-      selectionEnd: 0
+      selectionEnd: 0,
+      visibleIndex: new OutlineIndex(visibleNodes)
     }))).toEqual({ kind: "mergeIntoParent", parentId: "parent" });
 
     // the merge drops the row, so its note would go with it
