@@ -53,14 +53,14 @@ pub fn flags_say_dataless(st_flags: u32) -> bool {
 /// the caller already holds: `stat`-ing again would materialise any dataless
 /// folder on the way there, which is the cost this is trying to avoid.
 #[cfg(target_os = "macos")]
-pub fn is_dataless(facts: &std::fs::Metadata) -> bool {
+pub(crate) fn is_dataless(facts: &std::fs::Metadata) -> bool {
     use std::os::macos::fs::MetadataExt;
     flags_say_dataless(facts.st_flags())
 }
 
 /// Only iCloud leaves a file in this state, and only on Apple's filesystems.
 #[cfg(not(target_os = "macos"))]
-pub fn is_dataless(_facts: &std::fs::Metadata) -> bool {
+pub(crate) fn is_dataless(_facts: &std::fs::Metadata) -> bool {
     false
 }
 

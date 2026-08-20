@@ -1029,9 +1029,9 @@ fn a_deleted_row_puts_the_trash_in_the_queue() {
 /// `chflags` call, because only the file provider may set it — so the state is
 /// stated rather than built.
 ///
-/// The fourth is the one that matters. Since macOS 14 iCloud evicts a file in
-/// place: same name, same apparent size, no bytes. Reading it comes back empty
-/// or blocks, and writing over it is what has iCloud take the write for a new
+/// The fourth is the one that matters, and it is narrower than "evicted": it is
+/// a file iCloud evicted that this device then failed to fetch, since reading is
+/// what fetches. Writing over one is what has iCloud take the write for a new
 /// file, upload it, bring the stored copy back down, and leave `README 2.md`
 /// behind (TN2336's bounced file).
 #[test]

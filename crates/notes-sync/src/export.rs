@@ -144,7 +144,7 @@ fn write_checked(
 }
 
 /// What is already at a vault path, as far as the decision to replace it cares.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Existing {
     /// Nothing there, or nothing this app is willing to read.
     Absent,
@@ -167,14 +167,12 @@ pub enum WriteVerdict {
 
 /// Whether this app's bytes may replace what is already at a path.
 ///
-/// The state that is easy to miss is `NotLocal`. Since macOS 14 iCloud evicts a
-/// file in place rather than leaving a stub — same name, same apparent size, no
-/// bytes — so it reads as an ordinary file that merely disagrees with us.
-/// Writing over it is what has iCloud take the write for a new file, upload it,
-/// bring the stored copy back down, and leave a numbered copy behind. So it is
-/// answered the same way somebody else's edit is: left alone, and the merge
-/// deals with it. Reading it is what brings the bytes down, and the watcher is
-/// what reads.
+/// The state that is easy to miss is `NotLocal`: a file iCloud has evicted and
+/// this device could not fetch. Writing over one is what has iCloud take the
+/// write for a new file, upload it, bring the stored copy back down, and leave a
+/// numbered copy behind. So it is answered the way somebody else's edit is —
+/// left alone, and a later pass writes once the bytes are here. What fetches
+/// them is `existing_at`'s own read, or the watcher's.
 pub fn may_write(existing: &Existing, hash: &str, recorded: Option<&str>) -> WriteVerdict {
     match existing {
         Existing::Absent => WriteVerdict::Write,
@@ -185,18 +183,30 @@ pub fn may_write(existing: &Existing, hash: &str, recorded: Option<&str>) -> Wri
     }
 }
 
-/// Asks the folder what is at a path. The stat comes first and the read only
-/// happens if the bytes are here, so an evicted file is recognised instead of
-/// being pulled down by the very act of looking at it.
+/// Asks the folder what is at a path.
+///
+/// The read comes first, and that order is the contract. Reading an evicted
+/// iCloud file is what brings its bytes down, so a read that succeeds has left
+/// the file materialised — and writing over a materialised file is safe. The
+/// flag is only consulted when the read *failed*: offline, or a fetch that gave
+/// up. That is the one case where the bytes are somewhere else and the file
+/// still stands in the way, and writing then is what has iCloud take the write
+/// for a new file and leave a numbered copy behind.
+///
+/// Asking the other way round — flag first, skip the read — would leave nothing
+/// in the app that ever materialises a document.
 fn existing_at(vault_root: &Path, path: &Path) -> Existing {
-    if let Ok(facts) = std::fs::symlink_metadata(path)
-        && crate::intake::is_dataless(&facts)
+    if let Ok(bytes) =
+        crate::file_io::read_regular_bounded(vault_root, path, crate::parse::MAX_FILE_BYTES)
     {
-        return Existing::NotLocal;
+        return Existing::Bytes(hash_bytes(&bytes));
     }
-    match crate::file_io::read_regular_bounded(vault_root, path, crate::parse::MAX_FILE_BYTES) {
-        Ok(bytes) => Existing::Bytes(hash_bytes(&bytes)),
-        Err(_) => Existing::Absent,
+    match std::fs::symlink_metadata(path) {
+        Ok(facts) if crate::intake::is_dataless(&facts) => Existing::NotLocal,
+        // Nothing there, or something there this app was never willing to
+        // replace by reading it — too large, a link, a fifo. Both answered the
+        // way they always were.
+        _ => Existing::Absent,
     }
 }
 
