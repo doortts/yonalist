@@ -206,7 +206,11 @@ export function ImageNodeContent({
       // stops either -- Tab has no business landing here.
       tabIndex={-1}
       style={{ width: "100%", minWidth: 0 }}
-      onKeyDown={onKeyDown}
+      // The menu sits inside this row and the lightbox is a portal of it, so
+      // keys from either bubble through the React tree into the row's handler.
+      // Backspace there deletes the picture the layer is standing over, so the
+      // row's key surface goes quiet for as long as a layer holds the focus.
+      onKeyDown={menuOpen || lightboxOpen ? undefined : onKeyDown}
       onPaste={onPaste}
     >
       <div
