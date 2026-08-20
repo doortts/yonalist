@@ -78,6 +78,16 @@ Choose final gates by changed boundary:
 | --- | --- |
 | Frontend-only | `npm test`, `npm run lint`, `npm run test:bundle`, and `git diff --check`. `test:bundle` builds and then checks the entry bundle against its budget, so it stands in for `npm run build` rather than adding a second build. Explicitly skip Cargo tests, formatting, and Clippy when Rust, IPC payload contracts, persistence, and native configuration did not change. |
 | Rust/native, IPC payload contract, persistence, or native configuration | The frontend gates that apply, plus `cargo test --manifest-path src-tauri/Cargo.toml` and Rust formatting. Compare Clippy output with its baseline only when relevant to the touched boundary or explicitly required. |
+| A new or renamed Tauri command | The Rust/native gates plus `npm run test:architecture`. |
+
+Choose the gate row again whenever the boundary moves mid-change. A frontend
+row picked at the start does not survive the edit that reaches into Rust.
+
+A new Tauri command is only reachable once it appears in all three registries:
+the `generate_handler!` list, the window's `commands.allow`, and the
+architecture check's expected surface. Every test double implements the API
+shape, so a command missing from the ACL is denied only in the running app and
+passes every suite. `npm run test:architecture` is the gate that catches it.
 
 Do not repeatedly run the full suite inside the edit loop. Do not rerun a
 known flaky test merely to manufacture a pass. Isolate and report it. Do not
