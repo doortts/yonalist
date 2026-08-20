@@ -730,8 +730,7 @@ export function resolveOutlineKey(
     input.value.trim().length === 0 &&
     (input.supportingNote ?? "").trim().length === 0
   ) {
-    const index = input.visibleIndex?.positionOf(input.nodeId) ??
-      input.visibleNodes.findIndex((node) => node.id === input.nodeId);
+    const index = visiblePositionOf(input, input.nodeId);
     if (index < 0) return null;
     // The row above, then the rows below -- the first child of a row with
     // children is the row below it, so one downward scan covers both. The page

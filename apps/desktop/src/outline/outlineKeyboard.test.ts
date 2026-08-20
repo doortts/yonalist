@@ -1252,7 +1252,8 @@ describe("v2 outline keyboard intent resolver", () => {
       nodeId: "parent",
       value: " \t",
       selectionStart: 0,
-      selectionEnd: 0
+      selectionEnd: 0,
+      visibleIndex: new OutlineIndex(visibleNodes)
     }))).toEqual({ kind: "removeEmpty", focusId: "child" });
     expect(resolveOutlineKey(input({
       key: "Backspace",
