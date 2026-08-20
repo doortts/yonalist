@@ -206,6 +206,7 @@ export function OutlinePageHeading({
   visibleIndex,
   onBack,
   onTagClick,
+  onDateClick,
   imageDropTarget,
   onPickImage
 }: {
@@ -217,6 +218,7 @@ export function OutlinePageHeading({
   readonly visibleIndex: OutlineIndex;
   readonly onBack: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
+  readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly imageDropTarget: boolean;
   readonly onPickImage: () => void;
 }) {
@@ -323,6 +325,7 @@ export function OutlinePageHeading({
               value={title}
               placeholder="Untitled page"
               onTagClick={onTagClick}
+              onDateClick={onDateClick}
               onChange={(event) => store.setDraft(target.id, event.target.value)}
               onKeyDown={(event) => handlePageKeyDown(
                 event,
@@ -359,6 +362,7 @@ export function OutlinePageHeading({
                 createParentId: target.id
               })}
               onTagClick={onTagClick}
+              onDateClick={onDateClick}
               onAutoHide={() => setNoteOpen(false)}
             />
           )}

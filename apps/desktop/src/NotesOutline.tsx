@@ -54,7 +54,7 @@ export interface PaneRestoreRequest {
 
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
-  onHome, onOpenSplit, onTagClick, onClose, paneId, restoreRequest,
+  onHome, onOpenSplit, onTagClick, onDateClick, onClose, paneId, restoreRequest,
   onSelectionCountChange
 }: {
   readonly store: NotesStore;
@@ -67,6 +67,7 @@ export function NotesOutline({
   readonly onHome: () => void;
   readonly onOpenSplit?: (nodeId: string) => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
+  readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly onClose?: () => void;
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;
@@ -402,6 +403,7 @@ export function NotesOutline({
       if (wider) selection.replace(wider);
     },
     onTagClick,
+    onDateClick,
     onPickImage: (nodeId) => void imageIngest.openPicker(nodeId),
     onCopyImage: (nodeId) => putImageOnClipboard(
       nodeId,
@@ -566,6 +568,7 @@ export function NotesOutline({
               visibleIndex={visibleIndex}
               onBack={() => onZoomRootChange(null)}
               onTagClick={onTagClick}
+              onDateClick={onDateClick}
               imageDropTarget={imageIngest.dropTargetId === header.id}
               onPickImage={() => void imageIngest.openPicker(header.id)}
             />

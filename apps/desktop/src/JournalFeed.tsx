@@ -184,6 +184,7 @@ export function JournalFeed({
   onZoomRootChange,
   onHome,
   onTagClick,
+  onDateClick,
   onOpenDay,
   onSelectionCountChange
 }: {
@@ -198,6 +199,7 @@ export function JournalFeed({
   readonly onZoomRootChange: (nodeId: string | null) => void;
   readonly onHome: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
+  readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly onOpenDay: (date: string) => void;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
@@ -219,6 +221,7 @@ export function JournalFeed({
             onZoomRootChange={onZoomRootChange}
             onHome={onHome}
             onTagClick={onTagClick}
+            onDateClick={onDateClick}
             paneId="primary"
             restoreRequest={restoreRequest}
             onSelectionCountChange={onSelectionCountChange}

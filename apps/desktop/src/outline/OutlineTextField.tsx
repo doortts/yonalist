@@ -35,6 +35,8 @@ export interface OutlineTextFieldProps
   readonly markdown?: boolean;
   readonly containerClassName?: string;
   readonly onTagClick?: (token: OutlineTagToken) => void;
+  /** `anchor` is the token's own box, which is where its menu opens. */
+  readonly onDateClick?: (date: string, anchor: DOMRect) => void;
   readonly onOpenExternal?: (url: string) => void;
 }
 
@@ -92,6 +94,7 @@ function pointerTextOffset(
 function renderToken(
   token: OutlinePresentationToken,
   onTagClick: OutlineTextFieldProps["onTagClick"],
+  onDateClick: OutlineTextFieldProps["onDateClick"],
   onOpenExternal: NonNullable<OutlineTextFieldProps["onOpenExternal"]>
 ) {
   switch (token.kind) {
@@ -150,11 +153,31 @@ function renderToken(
         </button>
       );
     case "date":
-      return (
-        <span className="notes-date-token" key={token.start}>
-          {token.display}
-        </span>
-      );
+      // A date is a way into the day it names, so it is a control -- but only
+      // where somebody is listening: a date in a pane that cannot navigate
+      // stays the pill it has always been.
+      return onDateClick
+        ? (
+          <button
+            className="notes-date-token"
+            type="button"
+            aria-label={`Date ${token.raw}`}
+            aria-haspopup="menu"
+            key={token.start}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => onDateClick(
+              token.raw,
+              event.currentTarget.getBoundingClientRect()
+            )}
+          >
+            {token.display}
+          </button>
+        )
+        : (
+          <span className="notes-date-token" key={token.start}>
+            {token.display}
+          </span>
+        );
     case "text":
       return token.display;
   }
@@ -163,13 +186,14 @@ function renderToken(
 function renderPresentation(
   parsed: OutlinePresentation,
   onTagClick: OutlineTextFieldProps["onTagClick"],
+  onDateClick: OutlineTextFieldProps["onDateClick"],
   onOpenExternal: NonNullable<OutlineTextFieldProps["onOpenExternal"]>
 ) {
   if (parsed.kind === "divider") {
     return <span className="notes-markdown-divider" role="separator" />;
   }
   return parsed.tokens.map((token) =>
-    renderToken(token, onTagClick, onOpenExternal)
+    renderToken(token, onTagClick, onDateClick, onOpenExternal)
   );
 }
 
@@ -182,6 +206,7 @@ export const OutlineTextField = forwardRef<
     markdown = false,
     containerClassName,
     onTagClick,
+    onDateClick,
     onOpenExternal = (url) => void import("../openExternal").then(
       ({ openExternalUrl }) => openExternalUrl(url)
     ),
@@ -388,7 +413,9 @@ export const OutlineTextField = forwardRef<
       >
         {editing
           ? presentationValue
-          : renderPresentation(parsed, onTagClick, onOpenExternal)}
+          : renderPresentation(
+            parsed, onTagClick, onDateClick, onOpenExternal
+          )}
         {/* a textarea renders the line after a trailing newline, pre-wrap does not */}
         {value.endsWith("\n") ? "​" : null}
       </span>

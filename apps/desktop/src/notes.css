@@ -4117,3 +4117,41 @@ body.is-outline-dragging * {
     padding-inline: 12px;
   }
 }
+
+/* The menu a date token opens. Fixed to the token's own box, so it follows
+   the reader's eye rather than the pane's corner. */
+.notes-date-menu {
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 184px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius, 9px);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-popup, 0 10px 26px rgb(17 24 39 / 16%));
+}
+
+.notes-date-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: start;
+}
+
+.notes-date-menu-item:hover,
+.notes-date-menu-item:focus-visible {
+  background: var(--bg-hover);
+}
+
+.notes-date-menu-item svg {
+  color: var(--text-3);
+}

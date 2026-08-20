@@ -41,6 +41,9 @@ import {
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
 import { JournalFeed } from "./JournalFeed";
+import {
+  JournalDateMenu, type JournalDateMenuTarget
+} from "./JournalDateMenu";
 import { ROOT_ID } from "./store/storeSupport";
 import { journalDateOf, journalDays } from "./journal";
 import { localDateIso } from "./outline/outlineSlash";
@@ -137,6 +140,11 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // read underneath, so it stands in for the detail panes rather than
   // beside them: one editable outline is on screen either way.
   const [feedOpen, setFeedOpen] = useState(false);
+  // The date a reader pressed, and where its menu opens. Held here rather
+  // than in the pane: the same menu answers for a date in a row, in a note
+  // and in a page title, and only one of them can be open at a time.
+  const [dateMenu, setDateMenu] =
+    useState<JournalDateMenuTarget | null>(null);
   const [secondaryZoomRootId, setSecondaryZoomRootId] =
     useState<string | null>(null);
   const [primaryRestore, setPrimaryRestore] =
@@ -391,6 +399,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     // way back to where the reader came from.
     setSettingsOpen(false);
     setFeedOpen(false);
+    setDateMenu(null);
     if (pageId === store.getSnapshot().activePageId) return;
     await store.flushAllDrafts();
     const before = captureNavigation();
@@ -516,6 +525,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const openJournalDay = useCallback((date: string) => {
     setSettingsOpen(false);
     setFeedOpen(false);
+    setDateMenu(null);
     setLibraryView("all");
     setQuery("");
     const before = captureNavigation();
@@ -817,6 +827,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           : "");
   const handleTagClick = useCallback((token: OutlineTagToken) => {
     setQuery(`tag:${token.prefix}${token.normalized}`);
+  }, []);
+  // Under the token it was pressed on, which is where the reader is looking.
+  const handleDateClick = useCallback((date: string, anchor: DOMRect) => {
+    setDateMenu({ date, top: anchor.bottom + 6, left: anchor.left });
+  }, []);
+  const showLinkedRows = useCallback((date: string) => {
+    setSearchOpen(true);
+    setQuery(`date:${date}`);
   }, []);
   const shellStyle = {
     "--sidebar-width": sidebarCollapsed ? "0px" : `${sidebarWidth}px`
@@ -1123,6 +1141,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onZoomRootChange={updatePrimaryZoom}
           onHome={openHome}
           onTagClick={handleTagClick}
+          onDateClick={handleDateClick}
           onOpenDay={openJournalDay}
           onSelectionCountChange={reportSelectionCount}
         />
@@ -1144,7 +1163,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onOpenSplit={openSplit}
           onCloseSplit={closeSplit}
           onTagClick={handleTagClick}
+          onDateClick={handleDateClick}
           onSelectionCountChange={reportSelectionCount}
+        />
+      )}
+      {dateMenu && !settingsOpen && (
+        <JournalDateMenu
+          target={dateMenu}
+          onOpenDay={openJournalDay}
+          onShowLinkedRows={showLinkedRows}
+          onClose={() => setDateMenu(null)}
         />
       )}
       <footer className="app-statusbar" aria-label="Status bar">

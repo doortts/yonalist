@@ -25,6 +25,7 @@ export interface NotesDetailPanesProps {
   readonly onOpenSplit: (nodeId: string) => void;
   readonly onCloseSplit: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
+  readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
     count: number
@@ -48,6 +49,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onOpenSplit,
   onCloseSplit,
   onTagClick,
+  onDateClick,
   onSelectionCountChange
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
@@ -83,6 +85,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
               restoreRequest={primaryRestore}
               onOpenSplit={onOpenSplit}
               onTagClick={onTagClick}
+              onDateClick={onDateClick}
               onSelectionCountChange={onSelectionCountChange}
             />
           </div>
@@ -114,6 +117,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
                   restoreRequest={secondaryRestore}
                   onOpenSplit={onOpenSplit}
                   onTagClick={onTagClick}
+              onDateClick={onDateClick}
                   onClose={onCloseSplit}
                   onSelectionCountChange={onSelectionCountChange}
                 />
