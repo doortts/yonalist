@@ -371,12 +371,37 @@ HTML도 올라갔다. 그런데 `data-wf-layout`은 살아 있고
 "텍스트만 복사"가 이것이다. 비동기 쓰기를 쓰는 모든 호출자(액션 바 Copy·Cut,
 행 메뉴, 캐럿 행)가 같이 걸려 있었다.
 
-고친 곳은 공용 직렬화 한 곳이다. payload는 주석을 떠나 래퍼의 `data-` 속성으로
-간다(`data-yonalist-outline-clipboard`). 같은 pasteboard 덤프가 `data-`
-속성은 살아남는다는 증거다. 읽는 쪽 `extractOutlinePayload`도 속성을 읽는다.
-개발 단계라 주석을 읽는 호환 경로는 남기지 않았다 — 이전 빌드로 복사해 둔
-클립보드는 plain text로 떨어진다.
+고친 곳은 공용 직렬화 한 곳이다. payload는 주석을 떠나 첫 리스트 요소의
+`data-yonalist-outline-clipboard` 속성으로 간다. 같은 pasteboard 덤프가 리스트
+요소의 `data-` 속성은 살아남는다는 증거다(`data-wf-layout`). 래퍼 `<div>`를
+새로 씌우지 않은 이유는 밖으로 나가는 fragment를 그대로 두기 위해서다 — 바깥
+앱이 읽는 마크업은 예전과 같은 리스트 그대로다.
 
-계약 테스트는 구현이 아니라 이 사실을 붙잡는다: 주석을 지운 마크업에서도
-payload가 돌아와야 한다(`outlineClipboard.test.ts`의
+읽는 쪽 `extractOutlinePayload`는 정규식을 버리고 `DOMParser`로 파싱해 속성을
+찾는다. 마크업이 남의 엔진을 한 번 거쳐 돌아오므로 인용부호·속성 순서·속성이
+붙는 요소는 그 엔진이 정하고, 행 본문은 escape되어 content로만 들어가니 텍스트로
+속성을 위조할 수도 없다.
+
+개발 단계라 주석을 읽는 호환 경로는 남기지 않았다. 이전 빌드로 복사해 둔
+클립보드는 payload 없이 읽히고, 한 행짜리 복사라면 `parsePastedOutline`이
+줄바꿈 없는 입력을 `null`로 돌려주므로 붙여넣기는 새 행이 아니라 캐럿 행에
+`- A`라는 글자가 박히는 것으로 끝난다.
+
+계약 테스트는 구현이 아니라 이 사실을 붙잡는다: WebView가 내보낸 마크업 —
+`<head>`가 앞에 붙고, 시작 요소에 계산된 `style`이 찍히고, 주석은 전부 사라진
+그 형태 — 에서도 payload가 돌아와야 한다(`outlineClipboard.test.ts`의
 "round-trips the payload through the markup a WebView writes out").
+
+## 확정 2026-08-21 — 고친 빌드의 실앱 증거
+
+캐럿만 둔 불릿에 ⌘C, pasteboard `public.html`:
+
+```
+<head><meta charset="UTF-8"></head><ul data-yonalist-outline-clipboard="eyJraW5k…"
+  style="caret-color: rgb(0, 0, 0); …"><li data-wf-layout="bullet">[ ] …</li></ul>
+```
+
+속성이 살아남았고 base64는 `kind: yonalist-outline-clipboard`, `version: 1`,
+`marker: "todo"`로 디코드됐다. 남는 검증은 읽는 쪽 하나다 — 같은 클립보드를
+아웃라인에 붙여넣어 행으로 들어오는지. WKWebView가 `getData("text/html")`에
+무엇을 돌려주는지는 pasteboard 덤프가 답하지 않는다.
