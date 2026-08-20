@@ -30,7 +30,7 @@
  * hashes to the range each covers. The ranges keep a reader who never types
  * Greek or Cyrillic from parsing those faces at all. Hangul is in none of
  * them -- Excalifont has no Hangul -- so Korean text falls through to the
- * Hangul face handwritingHangul.css declares.
+ * face handwritingFaces.css declares.
  */
 @font-face {
   font-family: Excalifont;
@@ -1468,22 +1468,27 @@
 }
 
 /*
- * Xiaolai leads above; the reader can hand Hangul to Nanum Pen Script instead,
- * which is drawn by a Korean hand rather than inherited from a Japanese one.
- * Latin is Excalifont either way, so only the second family in the stack moves.
+ * The pair above is what excalidraw.com writes in. Nanum Pen Script instead
+ * writes the whole outline in one hand, Latin and Hangul alike, so it leads the
+ * stack rather than sitting behind Excalifont; Excalifont stays next in line
+ * for the Greek and Cyrillic Nanum Pen does not draw.
  */
-:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-node-title-field {
-  font-family: "Yonalist Caret Strut", Excalifont, "Nanum Pen Script", Inter,
+:root[data-text-font="hand"][data-handwriting-face="nanum"]
+  .notes-node-title-field {
+  font-family: "Yonalist Caret Strut", "Nanum Pen Script", Excalifont, Inter,
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
 }
 
-:root[data-text-font="hand"][data-hand-hangul="nanum"]
+:root[data-text-font="hand"][data-handwriting-face="nanum"]
   .notes-node-title-field[data-markdown-level],
-:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-node-note-field,
-:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-page-title-field,
-:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-page-note-field {
-  font-family: Excalifont, "Nanum Pen Script", Inter, ui-sans-serif, system-ui,
+:root[data-text-font="hand"][data-handwriting-face="nanum"]
+  .notes-node-note-field,
+:root[data-text-font="hand"][data-handwriting-face="nanum"]
+  .notes-page-title-field,
+:root[data-text-font="hand"][data-handwriting-face="nanum"]
+  .notes-page-note-field {
+  font-family: "Nanum Pen Script", Excalifont, Inter, ui-sans-serif, system-ui,
     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 

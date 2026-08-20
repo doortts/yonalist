@@ -1,8 +1,8 @@
 /*
- * Hangul faces for the handwriting text setting. Excalifont, declared in
- * notes.css, has no Hangul glyphs, so Korean text needs a hand-drawn face of
- * its own -- the same split excalidraw.com makes, which is where the first of
- * these comes from.
+ * The faces the handwriting text setting reaches for beyond Excalifont, which
+ * notes.css declares. Excalifont has no Hangul, so the Excalidraw setting pairs
+ * it with Xiaolai for Korean -- the same split excalidraw.com makes -- while the
+ * Nanum Pen setting writes both scripts in one hand.
  *
  * Xiaolai SC (小赖字体), Copyright (c) 2020 LXGW, SIL Open Font License 1.1 --
  * a Chinese handwriting font derived from SetoFont, and the CJK fallback
@@ -381,21 +381,31 @@
 /*
  * Nanum Pen Script, Copyright (c) 2010 NHN Corporation, designed by Sandoll
  * Communications, SIL Open Font License 1.1 -- Hangul drawn by a Korean hand,
- * where Xiaolai's comes by descent from a Japanese face. Which of the two runs
- * is the reader's setting; both sit behind Excalifont, which keeps the Latin.
+ * where Xiaolai's comes by descent from a Japanese face. Picking it hands the
+ * whole outline to one hand: it leads the stack, so its Latin replaces
+ * Excalifont's too, and Excalifont stays behind it for what it does not cover.
  *
  * Google Fonts' own woff2 builds and ranges, renamed only from the served hash
- * to the chunk index it carries. Google's Latin chunk is left out: Excalifont
- * leads the stack, so nothing would ever reach it. Provenance and licenses:
- * src-tauri/resources/FONT_SOURCE.md.
+ * to the chunk index it carries, except the Latin chunk, which is named for
+ * what it covers. Provenance and licenses: src-tauri/resources/FONT_SOURCE.md.
  *
- * size-adjust holds Hangul at the size the reader already sees. Measured at
+ * size-adjust holds the text at the size the reader already sees. Measured at
  * 100px, the ink height of 한 is 84.6 in the sans setting's Korean face and
  * 87.6 in Xiaolai, but only 60.9 in Nanum Pen Script, which is drawn small in
  * its em; 140% brings it back to 85.3 so switching the face does not shrink
  * the text. Line boxes are unaffected -- the rows fix their line-height, and
  * the caret strut leads the title stack.
  */
+
+@font-face {
+  font-family: "Nanum Pen Script";
+  src: url("./assets/nanum-pen/nanum-pen-latin.woff2") format("woff2");
+  font-display: swap;
+  size-adjust: 140%;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
 
 @font-face {
   font-family: "Nanum Pen Script";
