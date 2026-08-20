@@ -208,7 +208,10 @@ export function JournalFeed({
   readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly onOpenPage: (pageId: string) => void;
   readonly onOpenDay: (date: string) => void;
-  readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
+  readonly onCarryRows: (
+    pageId: string,
+    rowIds: readonly string[]
+  ) => Promise<void>;
   readonly today: string;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
@@ -217,7 +220,7 @@ export function JournalFeed({
 }) {
   const journalDate = useJournalDate(store, page?.id);
   return (
-    <section className="detail-pane notes-journal-feed" aria-label="Journals">
+    <section className="detail-pane" aria-label="Journals">
       <div className="pane-titlebar-spacer" />
       <div className="detail-scroll">
         <div

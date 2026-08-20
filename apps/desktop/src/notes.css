@@ -416,6 +416,7 @@
   margin: 0 8px 6px;
 }
 
+.notes-navigation-journals,
 .notes-navigation-pages,
 .notes-navigation-library {
   border-top: 1px solid var(--border);

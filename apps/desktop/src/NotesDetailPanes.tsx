@@ -35,7 +35,10 @@ export interface NotesDetailPanesProps {
   readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly onOpenPage: (pageId: string) => void;
   readonly onOpenDay: (date: string) => void;
-  readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
+  readonly onCarryRows: (
+    pageId: string,
+    rowIds: readonly string[]
+  ) => Promise<void>;
   readonly today: string;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",

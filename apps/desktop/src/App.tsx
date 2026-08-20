@@ -552,12 +552,11 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     setLibraryView("all");
     setQuery("");
     // The day already open is not a move, and recording one would put a step on
-    // the undo stack that takes the caret away and puts nothing back.
-    const snapshot = store.getSnapshot();
-    const open = snapshot.pages.find(
-      (page) => page.id === snapshot.activePageId
-    );
-    if (open && journalDateOf(open.title) === date) return;
+    // the undo stack that takes the caret away and puts nothing back. Read off
+    // the open page's own title rather than the page list: a day nobody has
+    // written in has no row in that list, and pressing it twice would mint a
+    // second page for the same day.
+    if (openJournalDate === date) return;
     const before = captureNavigation();
     afterDraftFlush(() => {
       void store.openJournal(date).then(async (pageId) => {
@@ -570,6 +569,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     afterDraftFlush,
     applyNavigation,
     captureNavigation,
+    openJournalDate,
     recordNavigation,
     store
   ]);
@@ -628,29 +628,23 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
    * shell, so that Undo has a view to put back as well as a command to take
    * back.
    */
-  const carryRowsInto = useCallback((
+  const carryRowsInto = useCallback(async (
     pageId: string,
     rowIds: readonly string[]
   ) => {
     const before = captureNavigation();
-    afterDraftFlush(() => {
-      void store.moveNodes(rowIds.map((id) => ({
-        id,
-        parentId: pageId,
-        beforeId: null
-      }))).then(async () => {
-        const after = emptyPaneLocation(pageId);
-        await applyNavigation(after);
-        recordMutationNavigation(before, after);
-      });
-    });
-  }, [
-    afterDraftFlush,
-    applyNavigation,
-    captureNavigation,
-    recordMutationNavigation,
-    store
-  ]);
+    await store.flushAllDrafts();
+    await store.moveNodes(rowIds.map((id) => ({
+      id,
+      parentId: pageId,
+      beforeId: null
+    })));
+    // Where the reader is does not change: the same page is open, inside the
+    // same zoom, with the same split beside it. Only the rows moved, so both
+    // ends of the step are the place they were already standing -- a blank
+    // pane location here would close their split and drop their zoom.
+    recordMutationNavigation(before, before);
+  }, [captureNavigation, recordMutationNavigation, store]);
   /**
    * The feed opens on today -- the day being written -- and reads the days
    * before it underneath. `openJournalDay` clears the flag as every other way

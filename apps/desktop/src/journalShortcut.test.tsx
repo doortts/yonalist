@@ -1,4 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent, render, screen, waitFor, within
+} from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { CommandEnvelope } from "../../../packages/contracts/generated/CommandEnvelope";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
@@ -126,6 +128,26 @@ describe("the journal shortcut", () => {
     });
     expect(commands(api).filter((command) => command.kind === "createNode"))
       .toHaveLength(0);
+  });
+
+  it("opens the same unwritten day twice without recording a move", async () => {
+    const api = shortcutApi({ journalExists: false });
+    render(<App api={api} />);
+    await screen.findByDisplayValue("Reading list");
+    const sidebar = within(screen.getByRole("navigation", { name: "Navigation" }));
+    const today = within(sidebar.getByRole("region", { name: "Journals" }))
+      .getByRole("button", { name: /^Today/u });
+
+    fireEvent.click(today);
+    await screen.findByDisplayValue(TODAY);
+    fireEvent.click(today);
+
+    // A day nobody has written in has no row in the page list, so a guard that
+    // reads the list would mint a second page for the same day and record a
+    // step that moves nothing. One Undo goes back to where the reader came
+    // from, not to the day they are already standing on.
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    expect(await screen.findByDisplayValue("Reading list")).toBeTruthy();
   });
 
   it("writes the day and its first row when the day has no page yet", async () => {

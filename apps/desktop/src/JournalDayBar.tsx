@@ -31,11 +31,19 @@ export function JournalDayBar({
   readonly pageId: string;
   readonly date: string;
   readonly onOpenDay: (date: string) => void;
-  readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
+  readonly onCarryRows: (
+    pageId: string,
+    rowIds: readonly string[]
+  ) => Promise<void>;
   /** Today, so the day can say when it is the one being lived. */
   readonly today: string;
 }) {
-  const carried = useCarryOverRows(store, date, pageId);
+  // Two pieces of the same state: how many carry-overs have settled, and
+  // whether one is in flight. The button goes quiet while it is, so a second
+  // press cannot move rows that are already on their way here.
+  const [carried, setCarried] = useState(0);
+  const [carrying, setCarrying] = useState(false);
+  const rows = useCarryOverRows(store, date, pageId, carried);
   const previous = shiftDay(date, -1);
   const next = shiftDay(date, 1);
   return (
@@ -45,16 +53,21 @@ export function JournalDayBar({
         <span className="notes-journal-today-chip">Today</span>
       )}
       <span className="notes-journal-day-bar-spacer" />
-      {carried.length > 0 && (
+      {rows.length > 0 && (
         <button
           className="notes-journal-carry"
           type="button"
-          onClick={() => onCarryRows(
-            pageId, carried.map((node) => node.id)
-          )}
+          disabled={carrying}
+          onClick={() => {
+            setCarrying(true);
+            void onCarryRows(pageId, rows.map((node) => node.id)).finally(() => {
+              setCarrying(false);
+              setCarried((count) => count + 1);
+            });
+          }}
         >
           <ArrowDownToLine size={13} aria-hidden="true" />
-          <span>{`Carry over ${carried.length}`}</span>
+          <span>{`Carry over ${rows.length}`}</span>
         </button>
       )}
       <button
@@ -87,14 +100,17 @@ export function JournalDayBar({
  * Read when the days to read change, and not on every revision: a keystroke on
  * the open day cannot change what an earlier day is still carrying, and reading
  * seven days again for each one would put an IPC round trip inside the typing
- * debounce. The days change as soon as a carry-over lands -- the rows move onto
- * this page, so the page list and its journals are read again -- which is what
- * empties the count that was just acted on.
+ * debounce. A carry-over is the one thing that empties these days without
+ * changing which days they are, so it says so itself through `carried` -- the
+ * page list looks identical either side of it, and an effect watching only that
+ * would go on offering rows that are already on this page.
  */
 function useCarryOverRows(
   store: NotesStore,
   date: string,
-  pageId: string
+  pageId: string,
+  /** Bumped each time a carry-over settles, which is when to look again. */
+  carried: number
 ): readonly NoteView[] {
   const shell = useSyncExternalStore(
     store.subscribeShell,
@@ -126,6 +142,6 @@ function useCarryOverRows(
     return () => {
       active = false;
     };
-  }, [dayIds, store]);
+  }, [carried, dayIds, store]);
   return rows;
 }
