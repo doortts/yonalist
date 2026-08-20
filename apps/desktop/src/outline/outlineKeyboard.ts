@@ -804,24 +804,17 @@ export function handleImageNodeKeyDown(
     !input.hasSelection
   ) {
     if (input.imageEdge === "before") {
+      const rows = input.visibleNodes;
       const at = input.visibleIndex?.positionOf(input.nodeId) ??
-        input.visibleNodes.findIndex((row) => row.id === input.nodeId);
-      const previous = at > 0 ? input.visibleNodes[at - 1] : undefined;
-      const current = nodeById(
-        structureNodes,
-        input.nodeId,
-        input.structureIndex
-      );
+        rows.findIndex((row) => row.id === input.nodeId);
+      const above = rows[at - 1];
       if (
-        previous?.kind !== "image" ||
-        !current ||
-        previous.parentId !== current.parentId
-      ) {
-        return null;
-      }
+        above?.kind !== "image" ||
+        above.parentId !== rows[at]!.parentId
+      ) return null;
       return input.repeat
         ? { kind: "consume" }
-        : { kind: "trash", nodeId: previous.id };
+        : { kind: "trash", nodeId: above.id };
     }
     return input.repeat ? { kind: "consume" } : { kind: "trash" };
   }
