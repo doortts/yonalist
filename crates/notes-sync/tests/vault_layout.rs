@@ -4,7 +4,8 @@
 //! when names clash would need a comparison of "who was here first", and two
 //! devices that have not seen each other answer that differently.
 
-use notes_sync::layout::page_folder_name;
+use notes_sync::layout::{composed_path, page_folder_name};
+use unicode_normalization::UnicodeNormalization;
 
 const ID: &str = "PrJects00001";
 
@@ -167,4 +168,32 @@ fn one_machine_provisions_one_device_id() {
             "`{seed}` is not a device id"
         );
     }
+}
+
+/// The folder the exporter builds and the folder the disk hands back are the
+/// same folder, and on macOS they can be spelled two ways. Every path check in
+/// sync is a string comparison, so the decomposed spelling is composed at the
+/// edge — otherwise a vault whose Korean folders came from an HFS+ disk records
+/// one spelling, writes the other into the home link, and reads the file again
+/// on every sweep.
+#[test]
+fn a_decomposed_path_off_the_disk_is_held_in_the_form_the_exporter_writes() {
+    let composed = page_folder_name("테스트 페이지", "6F9j7lgnd4OS").expect("name");
+    let decomposed: String = composed.nfd().collect();
+    assert_ne!(decomposed, composed, "the two spellings differ as strings");
+
+    assert_eq!(
+        composed_path(format!("{decomposed}/README.md")),
+        format!("{composed}/README.md")
+    );
+    // Already composed, and the plain ASCII path, are both left exactly as they
+    // stand — the form is settled, not rewritten.
+    assert_eq!(
+        composed_path(format!("{composed}/README.md")),
+        format!("{composed}/README.md")
+    );
+    assert_eq!(
+        composed_path("Projects-PrJects00001/README.md".to_owned()),
+        "Projects-PrJects00001/README.md"
+    );
 }

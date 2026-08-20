@@ -13,6 +13,7 @@ use notes_sync::document::{
     DocumentId, DocumentNode, DocumentRoot, Marker, NodeBody, PageDocument, VaultFile,
 };
 use notes_sync::merger::MergeInput;
+use unicode_normalization::UnicodeNormalization;
 
 const PAGE_ID: &str = "PrJects00001";
 const NODE_ID: &str = "Nd0000000001";
@@ -2154,4 +2155,55 @@ fn a_vault_stamped_at_the_old_width_comes_back_whole() {
         "the folder taught the database something, got {}",
         report.merged
     );
+}
+
+/// A page folder whose name arrived decomposed — stored that way by an HFS+
+/// disk, an old archive, or another client — is the same folder this app builds,
+/// spelled the other way. Recording the spelling the disk hands over puts it in
+/// the home link and in the stat gate's key under a name nothing else looks the
+/// page up by, so the page is read again on every sweep and the link stands for
+/// a folder no export ever writes to.
+#[test]
+fn a_page_folder_read_back_decomposed_is_recorded_composed() {
+    let (directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
+        .expect("seed");
+    // A merge adopted what another device wrote and leaves nothing waiting; a
+    // local edit is what puts the page's file on disk here.
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "Thought, typed here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    let composed = "테스트-PrJects00001";
+    let decomposed: String = composed.nfd().collect();
+    assert_ne!(decomposed, composed, "the two spellings differ as strings");
+    std::fs::rename(
+        vault.path().join("Projects-PrJects00001"),
+        vault.path().join(&decomposed),
+    )
+    .expect("the folder as another client stored it");
+
+    storage.reindex_vault(vault.path()).expect("reindex");
+
+    let connection =
+        rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
+    let recorded: String = connection
+        .query_row(
+            "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
+            [PAGE_ID],
+            |row| row.get(0),
+        )
+        .expect("the record");
+    assert_eq!(recorded, format!("{composed}/README.md"));
 }

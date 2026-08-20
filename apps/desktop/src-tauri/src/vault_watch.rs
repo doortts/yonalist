@@ -421,7 +421,7 @@ fn watched_path(vault_root: &Path, path: &Path) -> Option<String> {
         return None;
     }
     let relative = path.strip_prefix(vault_root).ok()?;
-    let relative = relative.to_string_lossy().into_owned();
+    let relative = notes_sync::layout::composed_path(relative.to_string_lossy().into_owned());
     // A folder called exactly `assets`, not a name that ends in one: an image
     // under `MyPassets/` is the user's own file, and importing it into this
     // app's store would be helping itself to their pictures.
@@ -484,6 +484,20 @@ mod tests {
             Some("Projects-PrJects00001/assets/shot-9f3a1c8e2044.png")
         );
         assert!(seen("assets/shot-9f3a1c8e2044.png").is_some());
+    }
+
+    /// The disk hands a name back in whatever form the folder stored it, and a
+    /// Korean folder that came from an HFS+ disk or an old archive is stored
+    /// decomposed. macOS opens either spelling, so the file is fine — what
+    /// breaks is the string comparisons: the stat gate's key, the recorded
+    /// folder, and the folder written into the home link would each hold a
+    /// different spelling of the same page.
+    #[test]
+    fn a_decomposed_name_is_seen_in_the_composed_form() {
+        assert_eq!(
+            seen("\u{1100}\u{1161}-PrJects00001/README.md").as_deref(),
+            Some("가-PrJects00001/README.md")
+        );
     }
 
     /// The user's own files are theirs. A folder whose name merely ends in
