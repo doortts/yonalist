@@ -35,6 +35,20 @@ pub fn coordinated_write<T>(
     mac::under_claim(path, mac::Claim::Write, write)
 }
 
+/// How many conflicting versions iCloud is holding on this file with none of
+/// them resolved.
+///
+/// This is a question, not a feature. TN2336 says the data scope keeps a
+/// conflict as another version of the same URL while the document scope bounces
+/// the name instead, and which of the two a user's CloudDocs folder does to us
+/// has never been observed. Zero is the answer for every file anyone has looked
+/// at so far; the first nonzero one is what would justify reading them.
+#[cfg(target_os = "macos")]
+pub fn unresolved_version_count(path: &Path) -> usize {
+    objc2_foundation::NSFileVersion::unresolvedConflictVersionsOfItemAtURL(&mac::file_url(path))
+        .map_or(0, |versions| versions.len())
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn coordinated_read<T>(
     path: &Path,
@@ -49,6 +63,12 @@ pub fn coordinated_write<T>(
     write: impl FnOnce(&Path) -> Result<T, String>,
 ) -> Result<T, String> {
     write(path)
+}
+
+/// Only iCloud keeps versions of a file, and only through Foundation.
+#[cfg(not(target_os = "macos"))]
+pub fn unresolved_version_count(_path: &Path) -> usize {
+    0
 }
 
 #[cfg(target_os = "macos")]
@@ -174,6 +194,19 @@ mod tests {
         .expect("read under a claim");
 
         assert_eq!(bytes, b"# Renamed\n");
+    }
+
+    #[test]
+    fn an_ordinary_local_file_has_no_unresolved_versions() {
+        let directory = dir();
+        let path = directory.path().join("README.md");
+        std::fs::write(&path, b"# Projects\n").expect("write");
+
+        assert_eq!(
+            unresolved_version_count(&path),
+            0,
+            "only iCloud puts versions on a file, and nothing here is in iCloud"
+        );
     }
 
     #[test]

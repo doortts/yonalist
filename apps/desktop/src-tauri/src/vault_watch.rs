@@ -265,6 +265,15 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Taken {
         // rewrite — it said something this device did not accept. Nothing
         // else would wake the exporter for that.
         Ok(Verdict::Merge(file, input)) => {
+            // A question we have no answer to yet: whether iCloud ever hands
+            // this app a conflict as another version of the same file rather
+            // than as a second file. A healthy vault says nothing here, so a
+            // line in the console is the whole report.
+            let versions =
+                notes_sync::coordination::unresolved_version_count(&vault_root.join(relative));
+            if versions > 0 {
+                eprintln!("vault: {relative} carries {versions} unresolved iCloud versions");
+            }
             let Ok(outcome) = storage.merge_document(&file, &input, Some(vault_root)) else {
                 return Taken::Nothing;
             };
