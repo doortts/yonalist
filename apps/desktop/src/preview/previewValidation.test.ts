@@ -116,4 +116,55 @@ describe("preview import validation", () => {
     expect(importing([{ id: "orphan", parentId: "outside", text: "Row" }]))
       .toThrow("must precede");
   });
+
+  // notes-core answers "only bullet titles can be merged", and this backend has
+  // to answer the same: it drops the previous row outright rather than soft
+  // deleting it, so a picture waved through here loses an attachment the real
+  // backend would have kept.
+  it("refuses a backward merge onto a picture the way notes-core does", () => {
+    const shot: NoteView = {
+      ...outside,
+      id: "shot",
+      kind: "image",
+      text: "photo.png",
+      sortKey: 1_024,
+      image: { ...IMAGE, displayWidth: 320 }
+    };
+    const below: NoteView = {
+      ...outside,
+      id: "below",
+      text: "beta",
+      sortKey: 2_048
+    };
+    const merging = (previousId: string) => () => validatePreviewBatch(
+      [page, shot, below],
+      {
+        kind: "mergeNodeBackward",
+        id: "below",
+        previous_id: previousId,
+        previous_text: "photo.png",
+        current_text: "beta"
+      },
+      holdsImage
+    );
+    expect(merging("shot")).toThrow("invalid");
+    // A bullet behind the caret is still the merge this backend performs.
+    const bullet: NoteView = {
+      ...below,
+      id: "shot",
+      text: "alpha",
+      sortKey: 1_024
+    };
+    expect(() => validatePreviewBatch(
+      [page, bullet, below],
+      {
+        kind: "mergeNodeBackward",
+        id: "below",
+        previous_id: "shot",
+        previous_text: "alpha",
+        current_text: "beta"
+      },
+      holdsImage
+    )).not.toThrow();
+  });
 });
