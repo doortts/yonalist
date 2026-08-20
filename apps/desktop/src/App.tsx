@@ -5,7 +5,7 @@ import {
 } from "react";
 import "./styles.css";
 import "./notes.css";
-import "./handwritingHangul.css";
+import "./handwritingFaces.css";
 import "./formControls.css";
 import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { tauriNotesApi, type NotesApi } from "./api";
@@ -17,6 +17,7 @@ import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
 import { LibraryPageRow } from "./LibraryPageRow";
 import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
+import { nudgePageZoom, pageZoomStep } from "./pageZoom";
 import {
   isDevtoolsShortcut, isDragDebugShortcut, toggleDevtools
 } from "./devtools";
@@ -287,6 +288,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     void store.flushAllDrafts().then(action);
   }, [store]);
   const openPage = useCallback(async (pageId: string) => {
+    // Asking for a page is asking to read it, so the settings screen goes --
+    // including when the page asked for is the one already open, which is the
+    // way back to where the reader came from.
+    setSettingsOpen(false);
     if (pageId === store.getSnapshot().activePageId) return;
     await store.flushAllDrafts();
     const before = captureNavigation();
@@ -473,6 +478,15 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           shortcuts.current.openPageAt(place);
           return;
         }
+      }
+      // The page's own size, in the 5% steps the numeric row's other end reads
+      // in. There is no reset chord: Cmd+0 is All pages here, so the way back
+      // is the same key that came out.
+      const zoomStep = pageZoomStep(event);
+      if (zoomStep !== 0) {
+        event.preventDefault();
+        void nudgePageZoom(zoomStep);
+        return;
       }
       // A new page and the settings screen answer from anywhere too: neither
       // chord is something a line of text is asking for.
@@ -860,14 +874,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             darkTheme={theme.darkTheme}
             caretColor={theme.caretColor}
             textFont={theme.textFont}
-            handHangulFont={theme.handHangulFont}
+            handwritingFace={theme.handwritingFace}
             markerStyles={markers.markerStyles}
             onThemeModeChange={theme.setMode}
             onLightThemeChange={theme.setLightTheme}
             onDarkThemeChange={theme.setDarkTheme}
             onCaretColorChange={theme.setCaretColor}
             onTextFontChange={theme.setTextFont}
-            onHandHangulFontChange={theme.setHandHangulFont}
+            onHandwritingFaceChange={theme.setHandwritingFace}
             onMarkerStylesChange={markers.setMarkerStyles}
             onClose={closeSettings}
             unusedAssets={(purge) => api.unusedAssets(purge)}

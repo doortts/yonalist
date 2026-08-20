@@ -13,15 +13,27 @@ export type ResolvedTheme = LightTheme | DarkTheme;
 export type CaretColor = "auto" | string;
 /** What the outline's own text is set in; the rest of the app never changes. */
 export type TextFont = "sans" | "mono" | "hand";
-/** Which hand draws Hangul once the outline text is handwriting. */
-export type HandHangulFont = "xiaolai" | "nanum";
+/**
+ * Which hand writes the outline once the outline text is handwriting.
+ * "excalidraw" is the Excalifont and Xiaolai pair excalidraw.com writes in;
+ * the rest each draw both scripts themselves.
+ */
+export const handwritingFaces = [
+  "excalidraw",
+  "nanum",
+  "gaegu",
+  "gamja-flower",
+  "poor-story",
+  "single-day"
+] as const;
+export type HandwritingFace = (typeof handwritingFaces)[number];
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
 const lightThemeStorageKey = "yonalist.lightTheme.v1";
 const darkThemeStorageKey = "yonalist.darkTheme.v1";
 const caretColorStorageKey = "yonalist.caretColor.v1";
 const textFontStorageKey = "yonalist.textFont.v1";
-const handHangulStorageKey = "yonalist.handHangul.v1";
+const handwritingFaceStorageKey = "yonalist.handwritingFace.v1";
 
 function readStoredValue(key: string): string | null {
   try {
@@ -82,8 +94,11 @@ function loadTextFont(): TextFont {
   return stored === "mono" || stored === "hand" ? stored : "sans";
 }
 
-function loadHandHangulFont(): HandHangulFont {
-  return readStoredValue(handHangulStorageKey) === "nanum" ? "nanum" : "xiaolai";
+function loadHandwritingFace(): HandwritingFace {
+  const stored = readStoredValue(handwritingFaceStorageKey);
+  return handwritingFaces.includes(stored as HandwritingFace)
+    ? (stored as HandwritingFace)
+    : "excalidraw";
 }
 
 function systemPrefersDark(): boolean {
@@ -100,8 +115,8 @@ export function useTheme() {
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
   const [caretColor, setCaretColorState] = useState<CaretColor>(() => loadCaretColor());
   const [textFont, setTextFontState] = useState<TextFont>(() => loadTextFont());
-  const [handHangulFont, setHandHangulFontState] = useState<HandHangulFont>(() =>
-    loadHandHangulFont()
+  const [handwritingFace, setHandwritingFaceState] = useState<HandwritingFace>(
+    () => loadHandwritingFace()
   );
 
   useEffect(() => {
@@ -146,8 +161,8 @@ export function useTheme() {
   }, [textFont]);
 
   useEffect(() => {
-    document.documentElement.dataset.handHangul = handHangulFont;
-  }, [handHangulFont]);
+    document.documentElement.dataset.handwritingFace = handwritingFace;
+  }, [handwritingFace]);
 
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
@@ -174,9 +189,9 @@ export function useTheme() {
     writeStoredValue(textFontStorageKey, next);
   }, []);
 
-  const setHandHangulFont = useCallback((next: HandHangulFont) => {
-    setHandHangulFontState(next);
-    writeStoredValue(handHangulStorageKey, next);
+  const setHandwritingFace = useCallback((next: HandwritingFace) => {
+    setHandwritingFaceState(next);
+    writeStoredValue(handwritingFaceStorageKey, next);
   }, []);
 
   return {
@@ -190,8 +205,8 @@ export function useTheme() {
     setCaretColor,
     textFont,
     setTextFont,
-    handHangulFont,
-    setHandHangulFont,
+    handwritingFace,
+    setHandwritingFace,
     resolvedTheme
   };
 }

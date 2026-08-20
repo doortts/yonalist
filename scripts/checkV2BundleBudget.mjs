@@ -74,8 +74,21 @@ for (const file of files) {
 // gzip headroom, so raw still binds first — and below today's 8th largest lazy
 // chunk (webview, 3,361 bytes), so eagerly importing any of the big eight still
 // trips the gate. 347KiB would not have that property.
-const rawLimit = 346 * 1024;
-const gzipLimit = 105 * 1024;
+// Measured 2026-08-21 at the Cmd/Ctrl +/- page zoom: the entry pair is 355,051
+// raw / 107,524 gzip. Most of that arrived before this change — the same pair
+// without it is 354,168 raw / 107,166 gzip, so the drift since the 2026-08-20
+// raise had already eaten all but 136 raw of the headroom that raise recorded.
+// The page-zoom module itself is 883 raw / 358 gzip: the chord test, the 5%
+// step with its clamp, and the remembered size that has to be put back before
+// the first paint. The webview API it calls is not in that number — it loads
+// through the lazy chunk the native drag-drop listener already pulls, so a
+// press pays for the module and nothing else.
+// Headroom: 1,301 raw — about 400 gzip at these chunks' ratio, inside the 1,020
+// gzip headroom, so raw still binds first — and still below the 8th largest
+// lazy chunk (webview, 3,361 bytes), so eagerly importing any of the big eight
+// trips the gate the way it did before.
+const rawLimit = 348 * 1024;
+const gzipLimit = 106 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +

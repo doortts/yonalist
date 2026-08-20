@@ -9,20 +9,20 @@ import {
   MAX_OUTLINE_MARKER_LEVELS
 } from "./outlineMarkers";
 import { SettingsView } from "./SettingsView";
-import type { HandHangulFont, TextFont } from "./useTheme";
+import type { HandwritingFace, TextFont } from "./useTheme";
 
 function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> = {}) {
   const handlers = {
     caretColor: "auto",
     textFont: "sans" as TextFont,
-    handHangulFont: "xiaolai" as HandHangulFont,
+    handwritingFace: "excalidraw" as HandwritingFace,
     markerStyles: defaultOutlineMarkerStyles(),
     onThemeModeChange: vi.fn(),
     onLightThemeChange: vi.fn(),
     onDarkThemeChange: vi.fn(),
     onCaretColorChange: vi.fn(),
     onTextFontChange: vi.fn(),
-    onHandHangulFontChange: vi.fn(),
+    onHandwritingFaceChange: vi.fn(),
     onMarkerStylesChange: vi.fn(),
     onClose: vi.fn(),
     unusedAssets: vi.fn().mockResolvedValue({
@@ -418,23 +418,47 @@ describe("SettingsView", () => {
     expect(handlers.onTextFontChange).toHaveBeenCalledWith("hand");
   });
 
-  // The Hangul face only draws anything while the outline is handwriting, so
+  // The face picker only draws anything while the outline is handwriting, so
   // offering it under sans or monospace would be a control that does nothing.
-  it("keeps the Hangul face out of sight unless the text is handwriting", () => {
+  it("keeps the face picker out of sight unless the text is handwriting", () => {
     renderSettings();
 
     expect(
-      screen.queryByRole("radio", { name: "Nanum Pen handwriting Hangul" })
+      screen.queryByRole("radio", { name: "Nanum Pen handwriting face" })
     ).toBeNull();
   });
 
-  it("switches which face draws handwritten Hangul", () => {
+  it("switches which hand the outline is written in", () => {
     const handlers = renderSettings({ textFont: "hand" });
 
     fireEvent.click(
-      screen.getByRole("radio", { name: "Nanum Pen handwriting Hangul" })
+      screen.getByRole("radio", { name: "Nanum Pen handwriting face" })
     );
-    expect(handlers.onHandHangulFontChange).toHaveBeenCalledWith("nanum");
+    expect(handlers.onHandwritingFaceChange).toHaveBeenCalledWith("nanum");
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: "Gaegu handwriting face" })
+    );
+    expect(handlers.onHandwritingFaceChange).toHaveBeenCalledWith("gaegu");
+  });
+
+  // Every bundled face has to be reachable; one added to the stylesheet but
+  // left out of the picker would ship as dead weight nobody can select.
+  it("offers every bundled handwriting face", () => {
+    renderSettings({ textFont: "hand" });
+
+    for (const label of [
+      "Excalidraw",
+      "Nanum Pen",
+      "Gaegu",
+      "Gamja Flower",
+      "Poor Story",
+      "Single Day"
+    ]) {
+      expect(
+        screen.getByRole("radio", { name: `${label} handwriting face` })
+      ).toBeTruthy();
+    }
   });
 
   it("checks unused assets and purges only after confirmation", async () => {

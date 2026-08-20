@@ -67,24 +67,24 @@ Xiaolai SC is licensed under the SIL Open Font License, Version 1.1,
 copyright 2020-2024 LXGW and 2014 Nozomi Seto. The subsets carry no license
 text of their own, so it ships beside them as `Xiaolai-OFL.txt`.
 
-## Nanum Pen Script, the Korean-drawn alternative for handwritten Hangul
+## Nanum Pen Script, the second hand the outline can be written in
 
 Retrieved from Google Fonts on 2026-08-21. Xiaolai's Hangul comes down from a
-Japanese face, so the handwriting setting also offers Hangul drawn by a Korean
-hand, and the reader picks between them.
+Japanese face, so the handwriting setting also offers a Korean hand, and that
+one writes the whole outline: picking it puts Nanum Pen Script ahead of
+Excalifont, so its Latin runs too.
 
-Google Fonts serves the family as 93 woff2 chunks. The 92 Hangul and
-CJK-compatibility chunks are bundled under `apps/desktop/src/assets/nanum-pen/`,
-renamed only from the served hash to the chunk index each already carries; the
-Latin chunk is left out, since Excalifont leads the stack and nothing would
-reach it. The chunks and their unicode ranges come from
+Google Fonts serves the family as 93 woff2 chunks, all of them bundled under
+`apps/desktop/src/assets/nanum-pen/` and renamed only from the served hash to
+the chunk index each already carries, except the Latin chunk, which is named
+for what it covers. The chunks and their unicode ranges come from
 `https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&display=swap`, read
 with a browser user agent, and each file is a byte-for-byte copy of the
 `https://fonts.gstatic.com/s/nanumpenscript/v25/...` URL that stylesheet names.
 
 | Item | Value |
 | --- | --- |
-| Bundled chunks | 92 files, 1,299,176 bytes, listed with their SHA-256 in `apps/desktop/src/assets/nanum-pen/SHA256SUMS` |
+| Bundled chunks | 93 files, 1,311,112 bytes, listed with their SHA-256 in `apps/desktop/src/assets/nanum-pen/SHA256SUMS` |
 | License | https://raw.githubusercontent.com/google/fonts/main/ofl/nanumpenscript/OFL.txt, 4,534 bytes, `eeacf16032901d0ed0456876ec77b8f0fda6b3fecec7d972f8543eb602e6c30f` |
 
 Nanum Pen Script is licensed under the SIL Open Font License, Version 1.1,
@@ -94,3 +94,37 @@ own builds rather than a conversion of our own, and it ships beside them as
 `NanumPenScript-OFL.txt`. Its text matches `NanumGothic-OFL.txt` except for two
 trailing spaces this repository's copy of that file has lost; the recorded
 hash there is the upstream one, not the file's current hash.
+
+## Gaegu, Gamja Flower, Poor Story and Single Day, the readable hands
+
+Retrieved from Google Fonts on 2026-08-21. Nanum Pen Script is drawn thin and
+narrow, which is hard to read at the 16px a row is set in, so the handwriting
+setting also offers four hands that hold their shape at that size.
+
+Each is bundled the same way as Nanum Pen Script: every woff2 chunk Google
+serves, under `apps/desktop/src/assets/<face>/`, renamed only from the served
+hash to the chunk index it carries, with the Latin chunk named for what it
+covers. The chunks and their unicode ranges come from
+`https://fonts.googleapis.com/css2?family=<Family>&display=swap`, read with a
+browser user agent, and each file is a byte-for-byte copy of the
+`https://fonts.gstatic.com/s/...` URL that stylesheet names. Only the regular
+weight of each is bundled.
+
+| Face | Chunks | Bytes | Hangul syllables | size-adjust | License, all SIL OFL 1.1 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Gaegu | 89 | 482,884 | 2,350 | 106% | `Gaegu-OFL.txt`, copyright 2018 The Gaegu Project Authors |
+| Gamja Flower | 93 | 1,050,924 | 11,172 | 108% | `GamjaFlower-OFL.txt`, copyright YoonDesign Inc. |
+| Poor Story | 92 | 474,712 | 11,172 | 101% | `PoorStory-OFL.txt`, copyright YoonDesign Inc. |
+| Single Day | 89 | 595,520 | 11,172 | 107% | `SingleDay-OFL.txt`, copyright 2015 DXKorea Inc. |
+
+None of the four declares a Reserved Font Name, and the bundled files are
+Google's own builds, so nothing here is a Modified Version under the license.
+Their SHA-256 sums are listed per directory in `SHA256SUMS`.
+
+Gaegu covers the 2,350 syllables of KS X 1001 rather than all 11,172. A
+syllable outside that set falls to Xiaolai, which stands behind every chosen
+face, so it still comes out handwritten.
+
+size-adjust holds each face at the size the reader already sees: at 100px the
+ink height of 한 is 84.6 in the sans setting's Korean face, and 79.7, 78.1,
+83.8 and 79.4 in these four, which the percentages above bring back to it.
