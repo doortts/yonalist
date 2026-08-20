@@ -67,24 +67,24 @@ Xiaolai SC is licensed under the SIL Open Font License, Version 1.1,
 copyright 2020-2024 LXGW and 2014 Nozomi Seto. The subsets carry no license
 text of their own, so it ships beside them as `Xiaolai-OFL.txt`.
 
-## Nanum Pen Script, the Korean-drawn alternative for handwritten Hangul
+## Nanum Pen Script, the second hand the outline can be written in
 
 Retrieved from Google Fonts on 2026-08-21. Xiaolai's Hangul comes down from a
-Japanese face, so the handwriting setting also offers Hangul drawn by a Korean
-hand, and the reader picks between them.
+Japanese face, so the handwriting setting also offers a Korean hand, and that
+one writes the whole outline: picking it puts Nanum Pen Script ahead of
+Excalifont, so its Latin runs too.
 
-Google Fonts serves the family as 93 woff2 chunks. The 92 Hangul and
-CJK-compatibility chunks are bundled under `apps/desktop/src/assets/nanum-pen/`,
-renamed only from the served hash to the chunk index each already carries; the
-Latin chunk is left out, since Excalifont leads the stack and nothing would
-reach it. The chunks and their unicode ranges come from
+Google Fonts serves the family as 93 woff2 chunks, all of them bundled under
+`apps/desktop/src/assets/nanum-pen/` and renamed only from the served hash to
+the chunk index each already carries, except the Latin chunk, which is named
+for what it covers. The chunks and their unicode ranges come from
 `https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&display=swap`, read
 with a browser user agent, and each file is a byte-for-byte copy of the
 `https://fonts.gstatic.com/s/nanumpenscript/v25/...` URL that stylesheet names.
 
 | Item | Value |
 | --- | --- |
-| Bundled chunks | 92 files, 1,299,176 bytes, listed with their SHA-256 in `apps/desktop/src/assets/nanum-pen/SHA256SUMS` |
+| Bundled chunks | 93 files, 1,311,112 bytes, listed with their SHA-256 in `apps/desktop/src/assets/nanum-pen/SHA256SUMS` |
 | License | https://raw.githubusercontent.com/google/fonts/main/ofl/nanumpenscript/OFL.txt, 4,534 bytes, `eeacf16032901d0ed0456876ec77b8f0fda6b3fecec7d972f8543eb602e6c30f` |
 
 Nanum Pen Script is licensed under the SIL Open Font License, Version 1.1,
