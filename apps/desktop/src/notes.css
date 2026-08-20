@@ -4006,3 +4006,114 @@ body.is-outline-dragging * {
   background: rgba(0, 0, 0, 0.62);
   pointer-events: none;
 }
+
+/* ------------------------------------------------------------------ *
+ * Journals
+ *
+ * The feed is the day being written -- a whole outline pane -- with the
+ * days before it read underneath. Those days are not editable here, so
+ * they are drawn rather than built out of rows: no bullets to drag, no
+ * fields to focus, and a heading that is the way into the day itself.
+ * ------------------------------------------------------------------ */
+.notes-journal-earlier {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding: 8px 28px 56px calc(var(--notes-content-offset, 74px) - 22px);
+}
+
+.notes-journal-day {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notes-journal-day-heading {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.notes-journal-day-open {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 0 6px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  text-align: start;
+}
+
+.notes-journal-day-open:hover .notes-journal-day-date {
+  color: var(--accent);
+}
+
+.notes-journal-day-date {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.notes-journal-day-weekday {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.notes-journal-day-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notes-journal-day-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding-inline-start: calc(var(--journal-row-depth, 0) * 22px);
+  color: var(--text-1);
+  line-height: 1.55;
+}
+
+.notes-journal-day-bullet {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 9px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.notes-journal-day-bullet[data-marker="todo"] {
+  width: 12px;
+  height: 12px;
+  margin-top: 6px;
+  border: 1.5px solid var(--text-3);
+  border-radius: 4px;
+  background: transparent;
+}
+
+.notes-journal-day-bullet[data-marker="todo"][data-completed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.notes-journal-day-text[data-completed="true"] {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.notes-journal-more {
+  align-self: flex-start;
+}
+
+@media (max-width: 900px) {
+  .notes-journal-earlier {
+    padding-inline: 12px;
+  }
+}

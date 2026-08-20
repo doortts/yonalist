@@ -75,3 +75,15 @@ export function shiftDay(date: string, days: number): string {
     String(shifted.getUTCDate()).padStart(2, "0")
   ].join("-");
 }
+
+/**
+ * The day's name in the reader's own language. The date itself is the identity
+ * and never moves; this is only what sits beside it.
+ */
+export function weekdayOf(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  // Read back in UTC, the zone it was built in: west of Greenwich a UTC
+  // midnight is still the day before locally, and the name would slip a day.
+  return new Intl.DateTimeFormat(undefined, { weekday: "long", timeZone: "UTC" })
+    .format(new Date(Date.UTC(year, month - 1, day)));
+}

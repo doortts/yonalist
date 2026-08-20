@@ -1,5 +1,5 @@
 import {
-  CalendarDays, House, Minus, Plus, Search, Settings
+  CalendarDays, House, Minus, NotebookText, Plus, Search, Settings
 } from "lucide-react";
 import {
   lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState,
@@ -40,8 +40,9 @@ import {
   type PaneFocusSnapshot
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
+import { JournalFeed } from "./JournalFeed";
 import { ROOT_ID } from "./store/storeSupport";
-import { journalDateOf } from "./journal";
+import { journalDateOf, journalDays } from "./journal";
 import { localDateIso } from "./outline/outlineSlash";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import { ShortcutHint, useShortcutHints } from "./shortcutHints";
@@ -132,6 +133,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const [detailMaximized, setDetailMaximized] = useState(false);
   const [primaryZoomRootId, setPrimaryZoomRootId] = useState<string | null>(null);
   const [splitOpen, setSplitOpen] = useState(false);
+  // The feed is the day the reader is writing in with the days before it
+  // read underneath, so it stands in for the detail panes rather than
+  // beside them: one editable outline is on screen either way.
+  const [feedOpen, setFeedOpen] = useState(false);
   const [secondaryZoomRootId, setSecondaryZoomRootId] =
     useState<string | null>(null);
   const [primaryRestore, setPrimaryRestore] =
@@ -270,6 +275,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     const page = state.pages.find((entry) => entry.id === currentPageId);
     return page ? journalDateOf(page.title) : null;
   }, [currentPageId, state.pages]);
+  // What the feed reads under today. A day that is not older than the one at
+  // the top does not belong under it -- a date somebody wrote ahead of today
+  // included.
+  const feedDays = useMemo(
+    () => journalDays(state.pages).filter((day) => day.date < localDateIso()),
+    [state.pages]
+  );
   const activePage = atHome
     ? { id: ROOT_ID, title: "" }
     : state.pages.find((page) => page.id === state.activePageId) ??
@@ -378,6 +390,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     // including when the page asked for is the one already open, which is the
     // way back to where the reader came from.
     setSettingsOpen(false);
+    setFeedOpen(false);
     if (pageId === store.getSnapshot().activePageId) return;
     await store.flushAllDrafts();
     const before = captureNavigation();
@@ -502,6 +515,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
    */
   const openJournalDay = useCallback((date: string) => {
     setSettingsOpen(false);
+    setFeedOpen(false);
     setLibraryView("all");
     setQuery("");
     const before = captureNavigation();
@@ -527,6 +541,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
    */
   const openTodayToWrite = useCallback(() => {
     setSettingsOpen(false);
+    setFeedOpen(false);
     setLibraryView("all");
     setQuery("");
     const before = captureNavigation();
@@ -566,6 +581,15 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     recordNavigation,
     store
   ]);
+  /**
+   * The feed opens on today -- the day being written -- and reads the days
+   * before it underneath. `openJournalDay` clears the flag as every other way
+   * of opening a page does, so it is set after, in the same handler.
+   */
+  const openJournals = useCallback(() => {
+    openJournalDay(localDateIso());
+    setFeedOpen(true);
+  }, [openJournalDay]);
   /**
    * The keyboard's way in, matching what the button does with focus already on
    * it: remember where to come back to, then show the screen. Pressing it
@@ -927,6 +951,20 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     <ShortcutHint mac="⌘⇧J" other="Ctrl+Shift+J" />
                   </button>
                 </div>
+                <div
+                  className="notes-library-page-row"
+                  data-active={feedOpen ? "true" : undefined}
+                >
+                  <button
+                    className="notes-library-page"
+                    type="button"
+                    aria-current={feedOpen ? "page" : undefined}
+                    onClick={openJournals}
+                  >
+                    <NotebookText size={16} aria-hidden="true" />
+                    <span>Journals</span>
+                  </button>
+                </div>
               </div>
             </section>
             <section
@@ -1072,6 +1110,22 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             openNode={openAttachment}
           />
         </Suspense>
+      ) : feedOpen ? (
+        <JournalFeed
+          store={store}
+          status={state.status}
+          error={state.error}
+          pendingWrites={state.pendingWrites}
+          page={activePage}
+          zoomRootId={primaryZoomRootId}
+          restoreRequest={primaryRestore}
+          days={feedDays}
+          onZoomRootChange={updatePrimaryZoom}
+          onHome={openHome}
+          onTagClick={handleTagClick}
+          onOpenDay={openJournalDay}
+          onSelectionCountChange={reportSelectionCount}
+        />
       ) : (
         <NotesDetailPanes
           store={store}
