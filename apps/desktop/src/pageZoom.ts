@@ -1,0 +1,73 @@
+import { outlinePlatform } from "./outline/outlineSupport";
+
+// A press moves 5%, small enough that the reader can stop where the text feels
+// right instead of picking between two sizes that both miss.
+const STEP = 5;
+// Half size to triple: past either end the window's own chrome stops fitting
+// what it holds, and there is nothing further to read.
+const MIN_PERCENT = 50;
+const MAX_PERCENT = 300;
+const storageKey = "yonalist.pageZoom.v1";
+
+/**
+ * Which way a press moves the page, or 0 for a key that is not ours. Shift is
+ * allowed through because "+" is Shift+= on most layouts and reads as the same
+ * chord; the other primary modifier is somebody else's, the way the rest of the
+ * window's shortcuts read it.
+ */
+export function pageZoomStep(event: KeyboardEvent): number {
+  const onMac = outlinePlatform() === "mac";
+  const modifier = onMac ? event.metaKey : event.ctrlKey;
+  const otherModifier = onMac ? event.ctrlKey : event.metaKey;
+  if (!modifier || otherModifier || event.altKey || event.isComposing) return 0;
+  if (event.key === "=" || event.key === "+") return STEP;
+  if (event.key === "-" || event.key === "_") return -STEP;
+  return 0;
+}
+
+function loadPercent(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(storageKey));
+    return Number.isInteger(stored) && stored >= MIN_PERCENT && stored <= MAX_PERCENT
+      ? stored
+      : 100;
+  } catch {
+    return 100;
+  }
+}
+
+// One webview, one size: nothing renders this, so it needs no React state.
+let percent = loadPercent();
+
+/**
+ * The webview's own page zoom, which leaves every length the outline measures in
+ * CSS pixels -- a CSS `zoom` on an ancestor would not, and the row windowing
+ * measures rows against the scroller they sit in. The webview module is loaded
+ * on the way, the way the native drag-drop listener loads it: its bytes have no
+ * business in the first load, and a chunk in front of a keypress is invisible.
+ */
+async function applyPercent(): Promise<void> {
+  // The browser preview has the browser's own zoom, so there is nothing to do.
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  await getCurrentWebview().setZoom(percent / 100);
+}
+
+/** Page zoom is a runtime setting, so the last size is put back at startup. */
+export function restorePageZoom(): Promise<void> {
+  return percent === 100 ? Promise.resolve() : applyPercent();
+}
+
+/** Answers the size it settled on, which at either end is the one it had. */
+export async function nudgePageZoom(step: number): Promise<number> {
+  const next = Math.min(MAX_PERCENT, Math.max(MIN_PERCENT, percent + step));
+  if (next === percent) return percent;
+  percent = next;
+  try {
+    window.localStorage.setItem(storageKey, String(percent));
+  } catch {
+    // The size still holds for the session without persistence.
+  }
+  await applyPercent();
+  return percent;
+}
