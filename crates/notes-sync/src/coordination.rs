@@ -9,6 +9,11 @@
 //! Everywhere else these are the closures themselves, called with the path they
 //! were given. The seam exists so no other platform pays for a claim it has no
 //! daemon to make.
+//!
+//! One rule for callers: a claim never goes inside another claim. Two on the
+//! same thread deadlock — the inner one waits for the outer one to let go, and
+//! the outer one is waiting for the closure the inner one is in. Nothing in this
+//! crate does that today, and nothing should start.
 
 use std::path::Path;
 

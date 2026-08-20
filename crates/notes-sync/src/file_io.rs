@@ -3,7 +3,13 @@
 //! Every one of them holds a rule the spec states as a safety contract: a
 //! reader never follows a symbolic link out of the vault, a write is never
 //! observable half-done, and a move never silently replaces what it lands on.
+//!
+//! Confinement comes first and the claim second: the path is resolved and
+//! checked against the vault, and only then does `coordination` hold the
+//! resolved file while the work runs. Claiming the path as asked would put a
+//! claim on whatever a link in the folder pointed at.
 
+use crate::coordination::{coordinated_read, coordinated_write};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -21,21 +27,21 @@ pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 /// prefix of the new ones.
 pub fn write_atomic(vault_root: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
     let resolved = resolve_inside(vault_root, path)?;
-    let parent = resolved
-        .parent()
-        .ok_or("A vault path must name a directory.")?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".yonalist-")
-        .tempfile_in(parent)
-        .map_err(|error| format!("Could not open a temporary file: {error}"))?;
-    temporary
-        .write_all(bytes)
-        .and_then(|()| temporary.as_file().sync_all())
-        .map_err(|error| format!("Could not write the temporary file: {error}"))?;
-    temporary
-        .persist(&resolved)
-        .map_err(|error| format!("Could not put the file in place: {error}"))?;
-    sync_directory(parent)
+    coordinated_write(&resolved, |at| {
+        let parent = at.parent().ok_or("A vault path must name a directory.")?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".yonalist-")
+            .tempfile_in(parent)
+            .map_err(|error| format!("Could not open a temporary file: {error}"))?;
+        temporary
+            .write_all(bytes)
+            .and_then(|()| temporary.as_file().sync_all())
+            .map_err(|error| format!("Could not write the temporary file: {error}"))?;
+        temporary
+            .persist(at)
+            .map_err(|error| format!("Could not put the file in place: {error}"))?;
+        sync_directory(parent)
+    })
 }
 
 /// The rename is only durable once the directory entry is, so the parent is
@@ -91,30 +97,32 @@ pub fn read_regular_bounded(
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {
     let resolved = resolve_inside(vault_root, path)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&resolved)
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
-    if !metadata.is_file() {
-        return Err(format!("{} is not a regular file.", path.display()));
-    }
-    // One byte past the cap, so a file exactly at it still reads and anything
-    // larger is caught without loading the rest of it.
-    let mut bytes = Vec::new();
-    file.take(max_bytes.saturating_add(1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
-    if bytes.len() > max_bytes {
-        return Err(format!(
-            "{} is larger than {max_bytes} bytes.",
-            path.display()
-        ));
-    }
-    Ok(bytes)
+    coordinated_read(&resolved, |at| {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(at)
+            .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+        if !metadata.is_file() {
+            return Err(format!("{} is not a regular file.", path.display()));
+        }
+        // One byte past the cap, so a file exactly at it still reads and anything
+        // larger is caught without loading the rest of it.
+        let mut bytes = Vec::new();
+        file.take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+        if bytes.len() > max_bytes {
+            return Err(format!(
+                "{} is larger than {max_bytes} bytes.",
+                path.display()
+            ));
+        }
+        Ok(bytes)
+    })
 }
 
 /// Moves a file only onto free ground, in one step. A link-then-unlink pair
