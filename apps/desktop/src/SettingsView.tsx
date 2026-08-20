@@ -19,6 +19,7 @@ import { pickVaultFolder } from "./vaultPicker";
 import type {
   CaretColor,
   DarkTheme,
+  HandHangulFont,
   LightTheme,
   TextFont,
   ThemeMode
@@ -50,6 +51,12 @@ const textFontOptions: Array<{ value: TextFont; label: string }> = [
   { value: "hand", label: "Handwriting" }
 ];
 
+/* Excalifont draws no Hangul, so handwriting picks a second face for it. */
+const handHangulOptions: Array<{ value: HandHangulFont; label: string }> = [
+  { value: "xiaolai", label: "Xiaolai" },
+  { value: "nanum", label: "Nanum Pen" }
+];
+
 const markerShapeOptions: Array<{ value: OutlineMarkerShape; label: string }> = [
   { value: "dot", label: "Dot" },
   { value: "square", label: "Square" },
@@ -78,12 +85,14 @@ export function SettingsView({
   darkTheme,
   caretColor,
   textFont,
+  handHangulFont,
   markerStyles,
   onThemeModeChange,
   onLightThemeChange,
   onDarkThemeChange,
   onCaretColorChange,
   onTextFontChange,
+  onHandHangulFontChange,
   onMarkerStylesChange,
   onClose,
   unusedAssets,
@@ -103,12 +112,14 @@ export function SettingsView({
   readonly darkTheme: DarkTheme;
   readonly caretColor: CaretColor;
   readonly textFont: TextFont;
+  readonly handHangulFont: HandHangulFont;
   readonly markerStyles: readonly OutlineMarkerStyle[];
   readonly onThemeModeChange: (mode: ThemeMode) => void;
   readonly onLightThemeChange: (theme: LightTheme) => void;
   readonly onDarkThemeChange: (theme: DarkTheme) => void;
   readonly onCaretColorChange: (color: CaretColor) => void;
   readonly onTextFontChange: (font: TextFont) => void;
+  readonly onHandHangulFontChange: (font: HandHangulFont) => void;
   readonly onMarkerStylesChange: (styles: OutlineMarkerStyle[]) => void;
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
@@ -216,6 +227,15 @@ export function SettingsView({
                 optionSuffix="outline text"
                 onChange={onTextFontChange}
               />
+              {textFont === "hand" && (
+                <ThemeRadioGroup
+                  title="Handwriting Hangul"
+                  options={handHangulOptions}
+                  value={handHangulFont}
+                  optionSuffix="handwriting Hangul"
+                  onChange={onHandHangulFontChange}
+                />
+              )}
               <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
               <OutlineMarkerGroup
                 styles={markerStyles}
