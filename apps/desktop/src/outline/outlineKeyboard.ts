@@ -694,10 +694,17 @@ export function resolveOutlineKey(
     ) {
       return { kind: "mergeIntoParent", parentId: previous.id };
     }
+    // A picture above is refused too, though this merge runs the other way
+    // than the one above it: the row behind the caret is read for text and then
+    // dropped, so a picture there would paste its filename onto the head of the
+    // line and lose its row out from under the attachment. notes-core refuses
+    // the command regardless -- only bullet titles merge -- so sending it only
+    // ever bought a flash of the filename and a silent rollback.
     if (
       current &&
       previous &&
       current.parentId === previous.parentId &&
+      previous.kind === "bullet" &&
       previous.note.trim().length === 0 &&
       !(input.structureIndex?.hasChildren(previous.id) ??
         structureNodes.some((node) => node.parentId === previous.id))

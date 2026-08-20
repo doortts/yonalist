@@ -1326,6 +1326,25 @@ describe("v2 outline keyboard intent resolver", () => {
       visibleNodes: parentWithChild,
       structureNodes: parentWithChild
     }))).toBeNull();
+
+    // The merge reads the row behind the caret for text and then drops it, so a
+    // picture there would paste its filename onto the head of the line and lose
+    // its row out from under the attachment. A picture hangs under a bullet,
+    // never under the root, so the pair sits one level down.
+    const pictureAbove = [
+      node("holder", "page", "Holder", 1_024),
+      picture("shot", "holder", 1_024),
+      node("under", "holder", "beta", 2_048)
+    ];
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "under",
+      value: "beta",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: pictureAbove,
+      structureNodes: pictureAbove
+    }))).toBeNull();
   });
 
   it("merges a first child into the parent row above it", () => {
