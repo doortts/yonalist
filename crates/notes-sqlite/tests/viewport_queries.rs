@@ -753,6 +753,60 @@ fn search_filters_starred_trash_tags_and_dates_without_a_workspace_load() {
 }
 
 #[test]
+fn a_date_search_takes_a_range_as_well_as_a_day() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "page", "Inbox");
+    execute(
+        &service,
+        "july",
+        1,
+        IpcNotesCommand::CreateNode {
+            id: "july".into(),
+            parent_id: "page".into(),
+            before_id: None,
+            text: "retro on 2026-07-27".into(),
+        },
+    );
+    execute(
+        &service,
+        "august",
+        2,
+        IpcNotesCommand::CreateNode {
+            id: "august".into(),
+            parent_id: "page".into(),
+            before_id: None,
+            text: "release on 2026-08-24".into(),
+        },
+    );
+
+    let hits = |query: &str| {
+        storage
+            .search(SearchQuery {
+                text: query.into(),
+                cursor: None,
+                limit: 20,
+            })
+            .unwrap()
+            .hits
+            .into_iter()
+            .map(|hit| hit.node.id)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(hits("date:2026-07-01..2026-07-31"), vec!["july".to_owned()]);
+    assert_eq!(
+        hits("date:2026-07-01..2026-08-31"),
+        vec!["july".to_owned(), "august".to_owned()]
+    );
+    assert!(hits("date:2026-09-01..2026-09-30").is_empty());
+    // Both ends are dates or it is not a range: the whole string falls through
+    // to the text search, which finds nothing written like that.
+    assert!(hits("date:2026-07-01..").is_empty());
+    assert!(hits("date:..2026-07-31").is_empty());
+}
+
+#[test]
 fn a_viewport_carries_the_page_node_the_body_listing_leaves_out() {
     let storage = SqliteStorage::open_in_memory().unwrap();
     let service = NotesService::new(&storage, "session", 0);

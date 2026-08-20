@@ -3,8 +3,9 @@ use notes_application::{
     StorageError, ViewportPage, ViewportRequest,
 };
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
+use crate::mutations::valid_date;
 use crate::repository;
 use crate::schema::ROOT_ID;
 
@@ -198,23 +199,35 @@ pub(crate) fn search(
     let limit = request.limit.clamp(1, MAX_SEARCH_LIMIT) as usize;
     let normalized = text.to_ascii_lowercase();
     let filter = if normalized == "is:starred" {
-        Some(("node.starred = ?1 AND node.deleted = 0", Value::Integer(1)))
+        Some((
+            "node.starred = ?4 AND node.deleted = 0",
+            vec![Value::Integer(1)],
+        ))
     } else if normalized == "is:trash" {
-        Some(("node.deleted = ?1", Value::Integer(1)))
+        Some(("node.deleted = ?4", vec![Value::Integer(1)]))
     } else if normalized == "is:tagged" {
         Some((
-            "?1 = 1 AND EXISTS (
+            "?4 = 1 AND EXISTS (
                 SELECT 1 FROM notes_tags WHERE notes_tags.node_id = node.id
              ) AND node.deleted = 0",
-            Value::Integer(1),
+            vec![Value::Integer(1)],
         ))
     } else if let Some(tag) = text.strip_prefix("tag:").filter(|tag| !tag.is_empty()) {
         Some((
             "EXISTS (
                 SELECT 1 FROM notes_tags
-                WHERE notes_tags.node_id = node.id AND notes_tags.token = ?1
+                WHERE notes_tags.node_id = node.id AND notes_tags.token = ?4
              ) AND node.deleted = 0",
-            Value::Text(tag.to_lowercase()),
+            vec![Value::Text(tag.to_lowercase())],
+        ))
+    } else if let Some((from, to)) = text.strip_prefix("date:").and_then(date_range) {
+        Some((
+            "EXISTS (
+                SELECT 1 FROM notes_dates
+                WHERE notes_dates.node_id = node.id
+                  AND notes_dates.date_key BETWEEN ?4 AND ?5
+             ) AND node.deleted = 0",
+            vec![Value::Text(from), Value::Text(to)],
         ))
     } else {
         text.strip_prefix("date:")
@@ -223,17 +236,17 @@ pub(crate) fn search(
                 (
                     "EXISTS (
                         SELECT 1 FROM notes_dates
-                        WHERE notes_dates.node_id = node.id AND notes_dates.date_key = ?1
+                        WHERE notes_dates.node_id = node.id AND notes_dates.date_key = ?4
                      ) AND node.deleted = 0",
-                    Value::Text(date.to_owned()),
+                    vec![Value::Text(date.to_owned())],
                 )
             })
     };
-    if let Some((clause, value)) = filter {
+    if let Some((clause, values)) = filter {
         return filtered_search(
             connection,
             clause,
-            value,
+            values,
             revision,
             offset,
             limit,
@@ -292,11 +305,20 @@ pub(crate) fn search(
     })
 }
 
+/// The two ends of `date:2026-08-01..2026-08-07`, or nothing. Both ends have to
+/// be real dates: a half-written range is a search for text that happens to
+/// start with `date:`, and answering it with every row in a month would be a
+/// worse answer than none.
+fn date_range(value: &str) -> Option<(String, String)> {
+    let (from, to) = value.split_once("..")?;
+    (valid_date(from) && valid_date(to)).then(|| (from.to_owned(), to.to_owned()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn filtered_search(
     connection: &Connection,
     clause: &str,
-    value: Value,
+    values: Vec<Value>,
     revision: u64,
     offset: usize,
     limit: usize,
@@ -312,36 +334,35 @@ fn filtered_search(
                         FROM notes_nodes parent
                         JOIN ancestors child ON child.parent_id = parent.id
                     )
-                    SELECT id FROM ancestors WHERE parent_id = ?4 LIMIT 1
+                    SELECT id FROM ancestors WHERE parent_id = ?3 LIMIT 1
                 ) AS page_id,
                 CASE
                     WHEN node.note = '' THEN node.text
                     ELSE node.text || ' ' || node.note
                 END
          FROM notes_node_records node
-         WHERE ({clause}) AND node.id <> ?4
+         WHERE ({clause}) AND node.id <> ?3
          ORDER BY node.sort_key, node.id
-         LIMIT ?2 OFFSET ?3"
+         LIMIT ?1 OFFSET ?2"
     );
     let mut statement = connection.prepare(&sql).map_err(internal)?;
+    let mut binds =
+        vec![
+            Value::Integer(i64::from(requested_limit.clamp(1, MAX_SEARCH_LIMIT)) + 1),
+            Value::Integer(i64::try_from(offset).map_err(|_| {
+                StorageError::Internal("search offset exceeded SQLite INTEGER".into())
+            })?),
+            Value::Text(ROOT_ID.to_owned()),
+        ];
+    binds.extend(values);
     let rows = statement
-        .query_map(
-            params![
-                value,
-                i64::from(requested_limit.clamp(1, MAX_SEARCH_LIMIT)) + 1,
-                i64::try_from(offset).map_err(|_| {
-                    StorageError::Internal("search offset exceeded SQLite INTEGER".into())
-                })?,
-                ROOT_ID
-            ],
-            |row| {
-                Ok(SearchHit {
-                    node: repository::parse_node(row)?.into(),
-                    page_id: row.get(20)?,
-                    snippet: row.get(21)?,
-                })
-            },
-        )
+        .query_map(params_from_iter(binds), |row| {
+            Ok(SearchHit {
+                node: repository::parse_node(row)?.into(),
+                page_id: row.get(20)?,
+                snippet: row.get(21)?,
+            })
+        })
         .map_err(internal)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(internal)?;

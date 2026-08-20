@@ -624,7 +624,7 @@ fn derived_dates(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn valid_date(value: &str) -> bool {
+pub(crate) fn valid_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return false;
