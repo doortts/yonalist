@@ -4256,3 +4256,24 @@ body.is-outline-dragging * {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* Unfinished work from the days before, brought forward on request. */
+.notes-journal-carry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-inline-end: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 7px);
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.notes-journal-carry:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}

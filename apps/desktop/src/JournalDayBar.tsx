@@ -1,6 +1,9 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowDownToLine, ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
-import { journalDateOf, shiftDay, weekdayOf } from "./journal";
+import { journalDateOf, journalDays, shiftDay, weekdayOf } from "./journal";
+import { carryOverDays, carryOverRows } from "./journalCarryOver";
 import { useNotesNode } from "./useNotesNode";
 
 /** `8/23`, the short way a day is named when it is only a direction. */
@@ -27,6 +30,7 @@ export function JournalDayBar({
   readonly onOpenDay: (date: string) => void;
 }) {
   const date = journalDateOf(useNotesNode(store, pageId).title);
+  const carried = useCarryOverRows(store, date, pageId);
   if (!date) return null;
   const previous = shiftDay(date, -1);
   const next = shiftDay(date, 1);
@@ -34,6 +38,20 @@ export function JournalDayBar({
     <div className="notes-journal-day-bar" role="group" aria-label={`Day ${date}`}>
       <span className="notes-journal-day-bar-weekday">{weekdayOf(date)}</span>
       <span className="notes-journal-day-bar-spacer" />
+      {carried.length > 0 && (
+        <button
+          className="notes-journal-carry"
+          type="button"
+          onClick={() => void store.moveNodes(carried.map((node) => ({
+            id: node.id,
+            parentId: pageId,
+            beforeId: null
+          })))}
+        >
+          <ArrowDownToLine size={13} aria-hidden="true" />
+          <span>{`Carry over ${carried.length}`}</span>
+        </button>
+      )}
       <button
         className="notes-journal-day-step"
         type="button"
@@ -54,4 +72,53 @@ export function JournalDayBar({
       </button>
     </div>
   );
+}
+
+/**
+ * The unfinished To-dos waiting on the days before this one. Read here rather
+ * than counted from what is on screen: those days are not open, and the count
+ * is the whole of what the button can honestly say before it is pressed. It is
+ * read again on every revision, so the row that was just carried leaves the
+ * count it came from.
+ */
+function useCarryOverRows(
+  store: NotesStore,
+  date: string | null,
+  pageId: string
+): readonly NoteView[] {
+  const shell = useSyncExternalStore(
+    store.subscribeShell,
+    store.getShellSnapshot,
+    store.getShellSnapshot
+  );
+  const [rows, setRows] = useState<readonly NoteView[]>([]);
+  const dayIds = date
+    ? carryOverDays(journalDays(shell.pages), date)
+      .filter((day) => day.id !== pageId)
+      .map((day) => day.id)
+      .join(" ")
+    : "";
+  const revision = shell.revision;
+  useEffect(() => {
+    if (dayIds.length === 0) {
+      setRows([]);
+      return () => undefined;
+    }
+    let active = true;
+    const ids = dayIds.split(" ");
+    void store.queryForest(ids).then(
+      (forest) => {
+        if (active) setRows(carryOverRows(forest.nodes, ids));
+      },
+      () => {
+        // Days that could not be read offer nothing to carry, which is what an
+        // empty list already says.
+        if (active) setRows([]);
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [dayIds, revision, store]);
+  return rows;
 }

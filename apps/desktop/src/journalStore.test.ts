@@ -88,6 +88,27 @@ describe("openJournal", () => {
     });
   });
 
+  it("creates the day when rows are carried into it", async () => {
+    const { store, api } = await readyStore([
+      { id: "page-1", title: "Page", sortKey: 1_024 }
+    ]);
+
+    const id = await store.openJournal("2026-08-21");
+    await store.moveNodes([
+      { id: "row-1", parentId: id, beforeId: null }
+    ]);
+
+    // Without the page, the move has nowhere to land: a carry-over into a day
+    // nobody has written in yet is the first write that day gets.
+    expect(commands(api)[0]).toEqual({
+      kind: "createNode",
+      id,
+      parent_id: "root",
+      before_id: null,
+      text: "2026-08-21"
+    });
+  });
+
   it("shows the date as the open page's title before anything is written", async () => {
     const { store } = await readyStore([
       { id: "page-1", title: "Page", sortKey: 1_024 }

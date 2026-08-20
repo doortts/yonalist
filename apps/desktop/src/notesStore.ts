@@ -41,8 +41,15 @@ import {
  * it. Everything else a command can name is a row inside some page, and a page
  * nobody has written in holds none: a move or a duplicate can only carry rows
  * that already exist, which means the page they came from already does too.
+ *
+ * A batch of moves is the exception, and the carry-over is why: rows from
+ * earlier days land on a day that may have no page yet, and the batch names
+ * their destination inside each move rather than on the command.
  */
 function commandTouches(command: IpcNotesCommand, pageId: string): boolean {
+  if ("moves" in command) {
+    return command.moves.some((move) => move.parentId === pageId);
+  }
   return ("id" in command && command.id === pageId) ||
     ("parent_id" in command && command.parent_id === pageId);
 }
