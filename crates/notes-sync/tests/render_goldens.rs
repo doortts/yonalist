@@ -61,10 +61,18 @@ fn node(id: &str, hlc: &str, text: &str) -> DocumentNode {
 }
 
 fn page() -> PageDocument {
-    let mut architecture = node("Nd0000000001", "0swkd7qz6-00-a3f2", "아키텍처 다시 그리기");
-    let mut boundaries = node("Nd0000000002", "0swkd7qz7-00-a3f2", "크레이트 경계 정리");
+    let mut architecture = node(
+        "Nd0000000001",
+        "0swkd7qz6-00-a3f2a3f2",
+        "아키텍처 다시 그리기",
+    );
+    let mut boundaries = node(
+        "Nd0000000002",
+        "0swkd7qz7-00-a3f2a3f2",
+        "크레이트 경계 정리",
+    );
     boundaries.marker = Marker::Todo;
-    let mut diagram = node("Nd0000000003", "0swkd7qz8-00-a3f2", "");
+    let mut diagram = node("Nd0000000003", "0swkd7qz8-00-a3f2a3f2", "");
     diagram.body = NodeBody::Image(ImageReference {
         original_name: "아키텍처.png".to_owned(),
         path: "assets/아키텍처-9f3a1c8e2044.png".to_owned(),
@@ -75,7 +83,7 @@ fn page() -> PageDocument {
     });
     architecture.children = vec![boundaries, diagram];
 
-    let mut tidied = node("Nd0000000004", "0swkd7qz9-00-a3f2", "정리한 것");
+    let mut tidied = node("Nd0000000004", "0swkd7qz9-00-a3f2a3f2", "정리한 것");
     tidied.completed = true;
     tidied.collapsed = true;
 
@@ -83,20 +91,20 @@ fn page() -> PageDocument {
         id: DocumentId::Node("PrJects00001".to_owned()),
         parent: None,
         sort_key: None,
-        max_hlc: "0swkd7qz9-00-a3f2".to_owned(),
+        max_hlc: "0swkd7qz9-00-a3f2a3f2".to_owned(),
         // Built in memory, so there is no file that could have been cut short.
-        stated_max_hlc: "0swkd7qz9-00-a3f2".to_owned(),
+        stated_max_hlc: "0swkd7qz9-00-a3f2a3f2".to_owned(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             note: "이번 분기에 손대는 것만.".to_owned(),
-            hlc: "0swkd7qz5-00-a3f2".to_owned(),
+            hlc: "0swkd7qz5-00-a3f2a3f2".to_owned(),
             starred: true,
             ..DocumentRoot::default()
         },
         nodes: vec![architecture, tidied],
         unknown_frontmatter: Vec::new(),
         writer: Some(Writer {
-            device_id: "a3f2".to_owned(),
+            device_id: "a3f2a3f2".to_owned(),
             device_name: "Suwon의 MacBook Pro".to_owned(),
         }),
     }
@@ -118,7 +126,7 @@ fn a_page_states_the_device_that_wrote_it_and_a_round_trip_keeps_it() {
 
     let text = String::from_utf8(rendered.clone()).expect("utf-8");
     assert!(
-        text.contains("device_id: a3f2\ndevice_name: Suwon의 MacBook Pro\n"),
+        text.contains("device_id: a3f2a3f2\ndevice_name: Suwon의 MacBook Pro\n"),
         "the frontmatter states the writer: {text}"
     );
 
@@ -152,16 +160,16 @@ fn rendering_the_same_state_twice_is_byte_identical() {
 
 #[test]
 fn the_trash_renders_byte_identical_to_its_golden() {
-    let mut old_page = node("Nd0000000005", "0swkd7qza-00-a3f2", "Old page");
+    let mut old_page = node("Nd0000000005", "0swkd7qza-00-a3f2a3f2", "Old page");
     old_page.from = Some(("root".to_owned(), 4_294_967_296));
-    let mut deleted = node("Nd0000000006", "0swkd7qzb-00-a3f2", "Deleted");
+    let mut deleted = node("Nd0000000006", "0swkd7qzb-00-a3f2a3f2", "Deleted");
     deleted.from = Some(("PrJects00001".to_owned(), 8_589_934_592));
-    let mut child = node("Nd0000000007", "0swkd7qzc-00-a3f2", "Child");
+    let mut child = node("Nd0000000007", "0swkd7qzc-00-a3f2a3f2", "Child");
     child.completed = true;
     deleted.children = vec![child];
 
     let rendered = render(&VaultFile::Trash(TrashDocument {
-        max_hlc: "0swkd7qzc-00-a3f2".to_owned(),
+        max_hlc: "0swkd7qzc-00-a3f2a3f2".to_owned(),
         nodes: vec![old_page, deleted],
     }))
     .expect("render");
@@ -175,15 +183,15 @@ fn a_split_document_renders_byte_identical_to_its_golden() {
         id: DocumentId::Node("Archive00001".to_owned()),
         parent: Some("PrJects00001".to_owned()),
         sort_key: Some(4_294_967_296),
-        max_hlc: "0swkd7qze-00-a3f2".to_owned(),
+        max_hlc: "0swkd7qze-00-a3f2a3f2".to_owned(),
         // Built in memory, so there is no file that could have been cut short.
-        stated_max_hlc: "0swkd7qze-00-a3f2".to_owned(),
+        stated_max_hlc: "0swkd7qze-00-a3f2a3f2".to_owned(),
         root: DocumentRoot {
             title: "2024 아카이브".to_owned(),
-            hlc: "0swkd7qzd-00-a3f2".to_owned(),
+            hlc: "0swkd7qzd-00-a3f2a3f2".to_owned(),
             ..DocumentRoot::default()
         },
-        nodes: vec![node("Nd0000000008", "0swkd7qze-00-a3f2", "3월 회고")],
+        nodes: vec![node("Nd0000000008", "0swkd7qze-00-a3f2a3f2", "3월 회고")],
         unknown_frontmatter: Vec::new(),
         writer: None,
     }))
@@ -194,12 +202,12 @@ fn a_split_document_renders_byte_identical_to_its_golden() {
 
 #[test]
 fn the_home_document_renders_byte_identical_to_its_golden() {
-    let mut projects = node("PrJects00001", "0swkd7qz5-00-a3f2", "");
+    let mut projects = node("PrJects00001", "0swkd7qz5-00-a3f2a3f2", "");
     projects.body = NodeBody::Split {
         title: "Projects".to_owned(),
         path: "Projects-PrJects00001/README.md".to_owned(),
     };
-    let mut minutes = node("Mnutes000001", "0swkd7qz6-00-a3f2", "");
+    let mut minutes = node("Mnutes000001", "0swkd7qz6-00-a3f2a3f2", "");
     minutes.body = NodeBody::Split {
         title: "회의록".to_owned(),
         path: "회의록-Mnutes000001/README.md".to_owned(),
@@ -209,12 +217,12 @@ fn the_home_document_renders_byte_identical_to_its_golden() {
         id: DocumentId::Home,
         parent: None,
         sort_key: None,
-        max_hlc: "0swkd7qz6-00-a3f2".to_owned(),
+        max_hlc: "0swkd7qz6-00-a3f2a3f2".to_owned(),
         // Built in memory, so there is no file that could have been cut short.
-        stated_max_hlc: "0swkd7qz6-00-a3f2".to_owned(),
+        stated_max_hlc: "0swkd7qz6-00-a3f2a3f2".to_owned(),
         root: DocumentRoot {
             title: "Home".to_owned(),
-            hlc: "0swkd7qz4-00-a3f2".to_owned(),
+            hlc: "0swkd7qz4-00-a3f2a3f2".to_owned(),
             ..DocumentRoot::default()
         },
         nodes: vec![projects, minutes],
@@ -231,10 +239,10 @@ fn the_home_document_renders_byte_identical_to_its_golden() {
 /// and a merge would have two places to disagree about one bit.
 #[test]
 fn a_completed_todo_says_so_with_its_checkbox_alone() {
-    let mut errand = node("Nd0000000009", "0swkd7qzf-00-a3f2", "Errand");
+    let mut errand = node("Nd0000000009", "0swkd7qzf-00-a3f2a3f2", "Errand");
     errand.marker = Marker::Todo;
     errand.completed = true;
-    let mut plain = node("Nd000000000a", "0swkd7qzg-00-a3f2", "Plain");
+    let mut plain = node("Nd000000000a", "0swkd7qzg-00-a3f2a3f2", "Plain");
     plain.completed = true;
 
     let (body, footer) = rendered_parts(vec![errand, plain]);
@@ -266,7 +274,7 @@ fn a_completed_todo_says_so_with_its_checkbox_alone() {
 /// the two files merged in would decide the answer.
 #[test]
 fn a_split_line_carries_no_state_of_its_own() {
-    let mut archive = node("Archive00001", "0swkd7qzd-00-a3f2", "");
+    let mut archive = node("Archive00001", "0swkd7qzd-00-a3f2a3f2", "");
     archive.body = NodeBody::Split {
         title: "2024 아카이브".to_owned(),
         path: "2024-아카이브-Archive00001/README.md".to_owned(),
@@ -283,7 +291,7 @@ fn a_split_line_carries_no_state_of_its_own() {
         "- [2024 아카이브](2024-아카이브-Archive00001/README.md) <!-- yid: Archive00001 -->"
     );
     assert_eq!(
-        footer[0], "yid: Archive00001 t: 0swkd7qzd-00-a3f2 split",
+        footer[0], "yid: Archive00001 t: 0swkd7qzd-00-a3f2a3f2 split",
         "the stamp and `split` are the whole of it: the star, the checkbox and the \
          fold the state above set are the child document's to answer"
     );
@@ -314,7 +322,7 @@ fn an_unstamped_document_is_reported_rather_than_written() {
 fn ordinary_punctuation_reaches_the_file_unescaped() {
     let mut plain = node(
         "Nd0000000001",
-        "0swkd7qz6-00-a3f2",
+        "0swkd7qz6-00-a3f2a3f2",
         "Shift+Enter — 설명 입력하기. 자세히는 docs/v2/sync-spec.md 참고 (2026).",
     );
     plain.note = "값이 3.5 이상, 또는 a*b 꼴이면 skip_this_one 처리".to_owned();
@@ -363,7 +371,7 @@ fn only_what_would_open_a_block_keeps_its_backslash() {
     ];
 
     for (typed, expected, why) in cases {
-        let (body, _) = rendered_parts(vec![node("Nd0000000001", "0swkd7qz6-00-a3f2", typed)]);
+        let (body, _) = rendered_parts(vec![node("Nd0000000001", "0swkd7qz6-00-a3f2a3f2", typed)]);
 
         assert_eq!(
             body[0]

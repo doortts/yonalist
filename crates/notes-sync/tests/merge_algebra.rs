@@ -41,7 +41,7 @@ type Row = (
 /// The device the database belongs to. Generated stamps never carry it: a stamp
 /// this device issued means a hand edit, which is deliberately order-dependent
 /// (it is an edit, after all) and belongs in a unit test rather than here.
-const HOME: &str = "cccc";
+const HOME: &str = "cccccccc";
 const PAGE_ID: &str = "PrJects00001";
 
 fn database() -> Connection {
@@ -60,7 +60,7 @@ fn database() -> Connection {
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
              VALUES ('root', NULL, 0, 'page', 'Home', ?1)",
-            [stamp(1, "a3f2")],
+            [stamp(1, "a3f2a3f2")],
         )
         .expect("root");
     connection
@@ -172,7 +172,7 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
             let nodes: Vec<DocumentNode> = (0..count)
                 .map(|index| DocumentNode {
                     id: node_id(index + 1),
-                    hlc: stamp(millis[index], "a3f2"),
+                    hlc: stamp(millis[index], "a3f2a3f2"),
                     body: NodeBody::Text(format!("node {index}")),
                     note: String::new(),
                     marker: Marker::Bullet,
@@ -190,7 +190,7 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
                 .map(|node| node.hlc.clone())
                 .max()
                 .unwrap_or_default()
-                .max(stamp(root_millis, "a3f2"));
+                .max(stamp(root_millis, "a3f2a3f2"));
             PageDocument {
                 id: DocumentId::Node(PAGE_ID.to_owned()),
                 parent: None,
@@ -200,7 +200,7 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
                 stated_max_hlc: max,
                 root: DocumentRoot {
                     title: "Projects".to_owned(),
-                    hlc: stamp(root_millis, "a3f2"),
+                    hlc: stamp(root_millis, "a3f2a3f2"),
                     ..DocumentRoot::default()
                 },
                 nodes,
@@ -317,7 +317,7 @@ fn stamps_of(documents: &[&PageDocument]) -> Vec<String> {
                 .chain(document.nodes.iter().map(|node| node.hlc.clone()))
         })
         .collect();
-    stamps.push(stamp(1, "a3f2"));
+    stamps.push(stamp(1, "a3f2a3f2"));
     stamps.sort();
     stamps.dedup();
     stamps
@@ -352,8 +352,8 @@ proptest! {
         first in changes(),
         second in changes(),
     ) {
-        let a = apply_changes(&base, &first, "aaa1");
-        let b = apply_changes(&base, &second, "bbb2");
+        let a = apply_changes(&base, &first, "aaa1aaa1");
+        let b = apply_changes(&base, &second, "bbb2bbb2");
         let known = stamps_of(&[&base, &a, &b]);
 
         let mut forwards = database();
@@ -379,8 +379,8 @@ proptest! {
         first in changes(),
         second in changes(),
     ) {
-        let a = apply_changes(&base, &first, "aaa1");
-        let b = apply_changes(&base, &second, "bbb2");
+        let a = apply_changes(&base, &first, "aaa1aaa1");
+        let b = apply_changes(&base, &second, "bbb2bbb2");
         let known = stamps_of(&[&base, &a, &b]);
 
         let mut mine = database();

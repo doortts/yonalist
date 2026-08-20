@@ -9,7 +9,7 @@
 use notes_sync::hlc::{Clock, Hlc};
 use rusqlite::Connection;
 
-const DEVICE: &str = "cccc";
+const DEVICE: &str = "cccccccc";
 const FIRST_PAGE: &str = "Notes0000001";
 const SECOND_PAGE: &str = "Notes0000002";
 const IMAGE_NODE: &str = "Nd0000000001";
@@ -45,7 +45,7 @@ fn clock() -> Clock {
 }
 
 fn stamp(millis: u64) -> String {
-    Hlc::new(millis, 0, "a3f2").expect("hlc").encode()
+    Hlc::new(millis, 0, "a3f2a3f2").expect("hlc").encode()
 }
 
 fn page(connection: &Connection, id: &str, title: &str, sort_key: i64) {

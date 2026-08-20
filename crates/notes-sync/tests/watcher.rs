@@ -9,15 +9,15 @@ const DOCUMENT: &[u8] = b"---\n\
     kind: yonalist-notes\n\
     format_version: 1\n\
     id: PrJects00001\n\
-    max_hlc: 0swkd7qz9-00-a3f2\n\
-    root_hlc: 0swkd7qz5-00-a3f2\n\
+    max_hlc: 0swkd7qz9-00-a3f2a3f2\n\
+    root_hlc: 0swkd7qz5-00-a3f2a3f2\n\
     ---\n\
     # Projects\n\
     \n\
     - Thought <!-- yid: Nd0000000001 -->\n\
     \n\
     <!-- yonalist\n\
-    yid: Nd0000000001 t: 0swkd7qz9-00-a3f2\n\
+    yid: Nd0000000001 t: 0swkd7qz9-00-a3f2a3f2\n\
     -->\n";
 
 /// The same document with one more bullet, which is what a hand edit leaves
@@ -28,8 +28,8 @@ const EDITED: &[u8] = b"---\n\
     kind: yonalist-notes\n\
     format_version: 1\n\
     id: PrJects00001\n\
-    max_hlc: 0swkd7qz9-00-a3f2\n\
-    root_hlc: 0swkd7qz5-00-a3f2\n\
+    max_hlc: 0swkd7qz9-00-a3f2a3f2\n\
+    root_hlc: 0swkd7qz5-00-a3f2a3f2\n\
     ---\n\
     # Projects\n\
     \n\
@@ -37,8 +37,8 @@ const EDITED: &[u8] = b"---\n\
     - Another <!-- yid: Nd0000000002 -->\n\
     \n\
     <!-- yonalist\n\
-    yid: Nd0000000001 t: 0swkd7qz9-00-a3f2\n\
-    yid: Nd0000000002 t: 0swkd7qz9-01-a3f2\n\
+    yid: Nd0000000001 t: 0swkd7qz9-00-a3f2a3f2\n\
+    yid: Nd0000000002 t: 0swkd7qz9-01-a3f2a3f2\n\
     -->\n";
 
 fn vault() -> tempfile::TempDir {

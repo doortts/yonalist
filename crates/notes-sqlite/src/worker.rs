@@ -194,8 +194,28 @@ pub struct SqliteStorage {
     worker: Option<JoinHandle<()>>,
 }
 
-/// The four hexadecimal characters an HLC carries to break ties between
-/// devices, provisioning the row on first open along with the vault's own id.
+/// What to write, given what the machine would say. Separated from the query so
+/// the refusal can be exercised: on a Mac the seed is always there, and the case
+/// worth pinning is the one that cannot be reached from a test.
+///
+/// No random stand-in. An id that cannot be derived is a machine this app cannot
+/// name, and naming it anyway is what turns a reinstall into a second device
+/// arguing with the stamps its own vault still holds. Refusing leaves the row
+/// unwritten, so a later open on a machine that does answer provisions the real
+/// id rather than inheriting an invented one.
+fn provisioned_device_id(seed: Option<String>) -> Result<String, StorageError> {
+    seed.ok_or_else(|| {
+        StorageError::Unavailable(
+            "This machine would not say which machine it is, so Notes could not give this \
+             database a device id. Notes it stamped would be signed by a device that changes \
+             on the next reinstall, and the folder would then hold two of them disagreeing."
+                .to_owned(),
+        )
+    })
+}
+
+/// The hexadecimal characters an HLC carries to break ties between devices,
+/// provisioning the row on first open along with the vault's own id.
 /// Never changed after that: a device that renamed itself would look like a
 /// different one to every merge.
 ///
@@ -214,7 +234,7 @@ fn ensure_device_id(connection: &Connection) -> Result<String, StorageError> {
     if let Some(device_id) = existing {
         return Ok(device_id);
     }
-    let device_id = notes_sync::hlc::device_seed();
+    let device_id = provisioned_device_id(notes_sync::hlc::device_seed())?;
     let vault_uuid = uuid::Uuid::new_v4().to_string();
     // Two processes can both find it empty; the one that loses reads back what
     // the other wrote rather than failing the open on the singleton key.
@@ -1017,5 +1037,35 @@ impl Drop for SqliteStorage {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A machine that will not identify itself gets no id at all. The old
+    /// behaviour drew a random one, which kept the app running as a device
+    /// nobody had heard of — and threw that identity away on the next
+    /// reinstall, leaving the vault holding two generations of stamps arguing
+    /// over notes one person wrote.
+    #[test]
+    fn a_machine_that_will_not_name_itself_gets_no_invented_id() {
+        let refused = provisioned_device_id(None).expect_err("no seed, no id");
+
+        assert!(
+            matches!(refused, StorageError::Unavailable(_)),
+            "the failure has to be the kind the window shows: {refused:?}"
+        );
+    }
+
+    /// And a derived one is passed through untouched: this is the seam, not a
+    /// second place that decides what a device is called.
+    #[test]
+    fn a_derived_seed_is_what_gets_written() {
+        assert_eq!(
+            provisioned_device_id(Some("cad27a0b".to_owned())).expect("a seed is an id"),
+            "cad27a0b"
+        );
     }
 }

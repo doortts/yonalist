@@ -103,7 +103,7 @@ mod tests {
     fn open() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory db");
         crate::schema::initialize(&mut connection).expect("schema");
-        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0dec0de").expect("clock"));
         notes_sync::hlc::register(&connection, clock).expect("register");
         crate::schema::ensure_root(&mut connection).expect("root");
         connection

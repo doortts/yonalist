@@ -25,7 +25,7 @@ fn workspace() -> (tempfile::TempDir, SqliteStorage, std::path::PathBuf) {
 
 fn writer(database: &std::path::Path) -> Connection {
     let connection = Connection::open(database).expect("open");
-    let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+    let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0dec0de").expect("clock"));
     notes_sync::hlc::register(&connection, clock).expect("register");
     connection
 }

@@ -20,7 +20,7 @@ fn inspect(database: &std::path::Path) -> Connection {
 /// bring a clock of its own — which is what the merge will do in M3.
 fn writer(database: &std::path::Path) -> Connection {
     let connection = inspect(database);
-    let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+    let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0dec0de").expect("clock"));
     notes_sync::hlc::register(&connection, clock).expect("register");
     connection
 }
@@ -95,7 +95,10 @@ fn a_command_commit_stamps_hlc_and_marks_dirty() {
             |row| row.get(0),
         )
         .expect("hlc");
-    assert_eq!(hlc.len(), 17, "an unstamped row cannot be exported");
+    assert!(
+        notes_sync::hlc::Hlc::decode(&hlc).is_ok(),
+        "an unstamped row cannot be exported, and `{hlc}` is not a reading"
+    );
     assert!(
         hlc > before,
         "the edit has to carry a newer reading than the row already had, \
@@ -317,7 +320,7 @@ fn making_room_for_a_line_does_not_promote_its_neighbours_claims() {
     }
     connection
         .execute(
-            "UPDATE notes_nodes SET sync_prev = ?2, sync_prev_hlc = '000000001-00-aaaa'
+            "UPDATE notes_nodes SET sync_prev = ?2, sync_prev_hlc = '000000001-00-aaaaaaaa'
              WHERE id = ?1",
             rusqlite::params![&ids[2], &ids[1]],
         )
@@ -345,7 +348,7 @@ fn making_room_for_a_line_does_not_promote_its_neighbours_claims() {
         )
         .expect("claim");
     assert_eq!(
-        bystander, "000000001-00-aaaa",
+        bystander, "000000001-00-aaaaaaaa",
         "this line follows who it always followed; only its number changed"
     );
 }
@@ -631,7 +634,7 @@ fn an_explicit_hlc_survives_a_merge_style_upsert() {
     connection
         .execute(
             "UPDATE notes_nodes SET text = 'From elsewhere', hlc = ?2 WHERE id = ?1",
-            rusqlite::params![page, "0swkd7qz5-00-b1c2"],
+            rusqlite::params![page, "0swkd7qz5-00-b1c2b1c2"],
         )
         .expect("merge-style update");
 
@@ -643,7 +646,7 @@ fn an_explicit_hlc_survives_a_merge_style_upsert() {
         )
         .expect("hlc");
     assert_eq!(
-        hlc, "0swkd7qz5-00-b1c2",
+        hlc, "0swkd7qz5-00-b1c2b1c2",
         "a reading that came from another device must not be restamped"
     );
 }
@@ -730,7 +733,11 @@ fn sync_meta_is_seeded_once_with_a_stable_device_id() {
         first, second,
         "a device that renames itself is a new device"
     );
-    assert_eq!(first.0.len(), 4);
+    assert!(
+        notes_sync::hlc::is_device_id(&first.0),
+        "`{}` is not a device id the stamp encoding can carry",
+        first.0
+    );
 }
 
 /// A vault outlives a database. Rebuilding one here used to draw a fresh random
@@ -780,7 +787,7 @@ fn the_clock_reseeds_from_stored_hlcs_on_boot() {
             // Well clear of anything this run issues, and well inside the 24h
             // the drift guard allows, so a slow machine cannot false-pass it.
             + 12 * 60 * 60 * 1_000;
-        notes_sync::hlc::Hlc::new(millis, 0, "b1c2")
+        notes_sync::hlc::Hlc::new(millis, 0, "b1c2b1c2")
             .expect("hlc")
             .encode()
     };

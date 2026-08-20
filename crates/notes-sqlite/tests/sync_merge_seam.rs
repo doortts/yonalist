@@ -130,7 +130,7 @@ fn beside(directory: &tempfile::TempDir) -> rusqlite::Connection {
 }
 
 fn stamp(millis: u64) -> String {
-    notes_sync::hlc::Hlc::new(millis, 0, "a3f2")
+    notes_sync::hlc::Hlc::new(millis, 0, "a3f2a3f2")
         .expect("hlc")
         .encode()
 }
@@ -331,7 +331,7 @@ fn conflicts_page_returns_both_sides_of_each_defeat() {
     // The name a merge would have learned from the file that lost.
     beside(&directory)
         .execute(
-            "INSERT INTO sync_devices(device_id, name) VALUES ('a3f2', 'Studio')",
+            "INSERT INTO sync_devices(device_id, name) VALUES ('a3f2a3f2', 'Studio')",
             [],
         )
         .expect("name");
@@ -350,7 +350,7 @@ fn conflicts_page_returns_both_sides_of_each_defeat() {
     // carried — not when the merge noticed the disagreement.
     assert_eq!(entry.dropped.edited_at_millis, 5);
     assert_eq!(entry.kept.edited_at_millis, 9);
-    assert_eq!(entry.dropped.device_id, "a3f2");
+    assert_eq!(entry.dropped.device_id, "a3f2a3f2");
     assert_eq!(entry.dropped.device_name.as_deref(), Some("Studio"));
     assert!(
         !entry.dropped.is_this_device && !entry.kept.is_this_device,
@@ -372,7 +372,7 @@ fn an_unnamed_device_is_reported_by_its_id() {
 
     let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
 
-    assert_eq!(entry.dropped.device_id, "a3f2");
+    assert_eq!(entry.dropped.device_id, "a3f2a3f2");
     assert_eq!(entry.dropped.device_name, None);
 }
 
@@ -651,13 +651,18 @@ fn an_export_with_nothing_waiting_writes_nothing() {
 fn a_hand_edited_file_gets_its_canonical_form_back() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
+    // A reindex is refused while anything is still owed to the folder, and a
+    // fresh database owes it the rows it was seeded with.
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export what the seed left waiting");
     let folder = vault.path().join("Projects-PrJects00001");
     std::fs::create_dir_all(&folder).expect("folder");
     // A file somebody typed into: same node, no comment, so the merge issues an
     // id and marks the document for a rewrite.
     let by_hand = "---\nkind: yonalist-notes\nformat_version: 1\n\
                    id: PrJects00001\n\
-                   max_hlc: 000000005-00-a3f2\nroot_hlc: 000000005-00-a3f2\n---\n\
+                   max_hlc: 000000005-00-a3f2a3f2\nroot_hlc: 000000005-00-a3f2a3f2\n---\n\
                    # Projects\n\n- typed by hand\n";
     std::fs::write(folder.join("README.md"), by_hand).expect("write");
     let parsed = notes_sync::parse::parse(by_hand.as_bytes()).expect("parse");
@@ -752,7 +757,7 @@ fn a_placeholder_row_does_not_stop_the_export() {
     let side = rusqlite::Connection::open(&db_path).expect("open");
     notes_sync::hlc::register(
         &side,
-        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddd").expect("clock")),
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddddddd").expect("clock")),
     )
     .expect("register");
     side.execute(
@@ -815,7 +820,7 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
     let side = rusqlite::Connection::open(&path).expect("open");
     notes_sync::hlc::register(
         &side,
-        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddd").expect("clock")),
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddddddd").expect("clock")),
     )
     .expect("register");
     side.execute(
@@ -1973,7 +1978,7 @@ fn a_rebuild_drops_what_the_vault_no_longer_states() {
     // no clock of its own.
     notes_sync::hlc::register(
         &side,
-        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddd").expect("clock")),
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddddddd").expect("clock")),
     )
     .expect("register");
     side.execute(
@@ -2085,5 +2090,68 @@ fn a_refused_rebuild_leaves_every_row_where_it_was() {
     assert!(
         waiting > 0,
         "and the queue that made the refusal true is still there to try again with"
+    );
+}
+
+/// Widening the device field of a stamp makes every reading already in the vault
+/// unreadable — and that is survivable, because a vault states its notes in
+/// Markdown and its readings in a comment. A database made again against such a
+/// folder has to come back holding the notes, stamped afresh by this device.
+///
+/// This is the whole migration story for the change, so it is pinned here rather
+/// than described in a plan: development does not migrate, the database is made
+/// again, and this is what "made again" has to mean for the person's notes.
+#[test]
+fn a_vault_stamped_at_the_old_width_comes_back_whole() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    // A reindex is refused while anything is still owed to the folder, and a
+    // fresh database owes it the rows it was seeded with.
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export what the seed left waiting");
+    let folder = vault.path().join("Projects-PrJects00001");
+    std::fs::create_dir_all(&folder).expect("folder");
+    // Written by hand at the width that shipped before, so the stamps here are
+    // exactly the ones this build refuses to decode.
+    std::fs::write(
+        folder.join("README.md"),
+        "---\n\
+         kind: yonalist-notes\n\
+         format_version: 1\n\
+         id: PrJects00001\n\
+         max_hlc: 0swkd7qz9-00-a3f2\n\
+         root_hlc: 0swkd7qz5-00-a3f2\n\
+         ---\n\
+         # Projects\n\
+         \n\
+         - Thought I would rather keep <!-- yid: Nd0000000001 -->\n\
+         \n\
+         <!-- yonalist\n\
+         yid: Nd0000000001 t: 0swkd7qz6-00-a3f2\n\
+         -->\n",
+    )
+    .expect("write");
+
+    let report = storage.reindex_vault(vault.path()).expect("reindex");
+
+    assert_eq!(
+        report.skipped, 0,
+        "an old reading is not an unreadable file"
+    );
+    let page = storage
+        .load_node(&notes_core::NodeId::try_from(PAGE_ID.to_owned()).expect("id"))
+        .expect("load")
+        .expect("the page came back");
+    assert_eq!(page.text(), "Projects");
+    let note = storage
+        .load_node(&notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"))
+        .expect("load")
+        .expect("the note came back");
+    assert_eq!(note.text(), "Thought I would rather keep");
+    assert!(
+        report.merged >= 1,
+        "the folder taught the database something, got {}",
+        report.merged
     );
 }

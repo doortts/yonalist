@@ -137,22 +137,34 @@ fn a_uuid_is_no_longer_a_name_a_folder_can_be_built_from() {
 /// — it differs per machine, and that is the point — so what is pinned is that
 /// it is stable, and that it is a device id the encoding will accept.
 ///
-/// Stability is asserted on Apple targets only. Elsewhere there is no machine
-/// identifier to derive from and the fallback is deliberately random, so the
-/// shape is all there is to check.
+/// On a target with no machine identifier to derive from there is no answer at
+/// all, and that absence is the contract: nothing here may invent one. So the
+/// test asserts the shape only where an answer is owed.
 #[test]
 fn one_machine_provisions_one_device_id() {
     let once = notes_sync::hlc::device_seed();
 
     #[cfg(target_os = "macos")]
-    assert_eq!(
-        once,
-        notes_sync::hlc::device_seed(),
-        "a second database on this Mac has to be the same device"
-    );
-    assert!(
-        notes_sync::hlc::is_device_id(&once),
-        "`{once}` is not a device id the stamp encoding can carry"
-    );
-    notes_sync::hlc::Hlc::new(0, 0, &once).expect("a reading can be issued with it");
+    {
+        let once = once.clone().expect("a Mac says which machine it is");
+        assert_eq!(
+            Some(&once),
+            notes_sync::hlc::device_seed().as_ref(),
+            "a second database on this Mac has to be the same device"
+        );
+        assert!(
+            notes_sync::hlc::is_device_id(&once),
+            "`{once}` is not a device id the stamp encoding can carry"
+        );
+        notes_sync::hlc::Hlc::new(0, 0, &once).expect("a reading can be issued with it");
+    }
+
+    // Whatever the target, an answer that exists is a usable one and an answer
+    // that does not is `None` rather than something drawn at random.
+    if let Some(seed) = once {
+        assert!(
+            notes_sync::hlc::is_device_id(&seed),
+            "`{seed}` is not a device id"
+        );
+    }
 }

@@ -146,6 +146,34 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
     connection.execute_batch(SCHEMA_SQL).map_err(internal)
 }
 
+/// Whether the readings in here are the shape this build issues.
+///
+/// The schema shape says nothing about it: widening the device field of a stamp
+/// changes no column. But every reading in the file is then one this build
+/// cannot decode, and the first thing to notice would be `Clock::new` refusing
+/// the stored device id — a message that names the width of a hexadecimal string
+/// rather than the reason the database has to go.
+///
+/// The device id stands in for all of them. It is the one value provisioned
+/// once and never rewritten, so a database whose id this build would not issue
+/// is a database whose stamps it would not issue either.
+#[cfg(debug_assertions)]
+fn stamps_this_build_can_read(connection: &Connection) -> bool {
+    use rusqlite::OptionalExtension;
+
+    let stored: Option<String> = connection
+        .query_row(
+            "SELECT device_id FROM sync_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    // Nothing provisioned yet is nothing to disagree with.
+    stored.is_none_or(|device_id| notes_sync::hlc::is_device_id(&device_id))
+}
+
 /// Development has no migrations and keeps no old databases: the schema is
 /// edited in place and the database is made again. So a development build
 /// makes it again itself, rather than asking someone to press reset — the
@@ -161,7 +189,7 @@ pub(crate) fn remake_if_an_older_build_made_it(path: &std::path::Path) {
     let Ok(connection) = Connection::open(path) else {
         return;
     };
-    if matches_shipped_schema(&connection).is_ok() {
+    if matches_shipped_schema(&connection).is_ok() && stamps_this_build_can_read(&connection) {
         return;
     }
     drop(connection);
@@ -300,7 +328,7 @@ mod tests {
         initialize(&mut connection).expect("schema");
         // The stamping triggers call `yona_hlc()`, which is registered per
         // connection; a writer without one cannot insert a row.
-        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0dec0de").expect("clock"));
         notes_sync::hlc::register(&connection, clock).expect("register");
         connection
     }
@@ -435,6 +463,55 @@ mod tests {
             before
         );
         assert_eq!(user_version(&connection), SCHEMA_VERSION);
+    }
+
+    /// The device id is the whole database's stamps in one value. Left behind at
+    /// a width this build no longer issues, every reading in the file is one it
+    /// cannot decode — and the first symptom would be `Clock::new` complaining
+    /// about the length of a hexadecimal string, which names nothing a person
+    /// can act on.
+    #[test]
+    fn a_database_stamped_at_another_width_is_made_again() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("notes.db");
+        let mut connection = Connection::open(&path).expect("database");
+        initialize(&mut connection).expect("schema");
+        connection
+            .execute(
+                "INSERT INTO sync_meta(singleton, device_id, vault_uuid)
+                 VALUES (1, 'a3f2', 'vault')",
+                [],
+            )
+            .expect("a narrower id than this build issues");
+        drop(connection);
+
+        remake_if_an_older_build_made_it(&path);
+
+        assert!(
+            !path.exists(),
+            "the database has to go, so the next open provisions this build's own width"
+        );
+    }
+
+    /// And a database this build did stamp is left exactly where it is.
+    #[test]
+    fn a_database_stamped_at_this_width_is_left_alone() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("notes.db");
+        let mut connection = Connection::open(&path).expect("database");
+        initialize(&mut connection).expect("schema");
+        connection
+            .execute(
+                "INSERT INTO sync_meta(singleton, device_id, vault_uuid)
+                 VALUES (1, 'a3f2a3f2', 'vault')",
+                [],
+            )
+            .expect("an id this build issues");
+        drop(connection);
+
+        remake_if_an_older_build_made_it(&path);
+
+        assert!(path.exists(), "nothing about it is out of date");
     }
 
     #[test]

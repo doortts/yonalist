@@ -820,7 +820,7 @@ mod tests {
             DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
             VaultFile,
         };
-        let hlc = notes_sync::hlc::Hlc::new(5, 0, "a3f2")
+        let hlc = notes_sync::hlc::Hlc::new(5, 0, "a3f2a3f2")
             .expect("hlc")
             .encode();
         VaultFile::Page(PageDocument {

@@ -11,7 +11,7 @@ use notes_sync::export::{ExportOutcome, export_document};
 use notes_sync::hlc::{Clock, Hlc};
 use rusqlite::Connection;
 
-const DEVICE: &str = "cccc";
+const DEVICE: &str = "cccccccc";
 const PAGE_ID: &str = "PrJects00001";
 const NODE_ID: &str = "Nd0000000001";
 
@@ -42,7 +42,7 @@ fn clock() -> Clock {
 }
 
 fn stamp(millis: u64) -> String {
-    Hlc::new(millis, 0, "a3f2").expect("hlc").encode()
+    Hlc::new(millis, 0, "a3f2a3f2").expect("hlc").encode()
 }
 
 /// A page with one bullet under it, both stamped and both waiting to go out.

@@ -107,7 +107,12 @@ vault/
 ### 4.1 공통 규칙
 
 - 인코딩 UTF-8, 개행 LF. 파서는 CRLF·CR을 LF로 정규화한다.
-- **HLC**: 17자 고정폭 `mmmmmmmmm-cc-dddd` — millis base36 소문자 9자 zero-pad, counter base36 2자, device 소문자 hex 4자. decode는 재인코딩 일치까지 요구한다(비정규형 거부, [hlc.rs:73-95](../../crates/notes-sync/src/hlc.rs#L73)). 빈 문자열은 "없음"이고 사전순 비교에서 언제나 진다. 발급 규칙: `now()`는 `millis = max(벽시계, 직전.millis)`, 같은 millis면 counter 증가 — 벽시계 역행에도 단조롭다. `observe(원격)`은 직전을 원격 최댓값 이상으로 끌어올려 병합 후 발급분이 항상 원격을 이기게 한다. **counter가 1,296을 넘으면 millis를 1 올리고 counter를 0으로** — 대량 붙여넣기가 한 트랜잭션에서 수천 노드를 스탬프하면 한 밀리초 안에서 실제로 넘친다. **클록은 영속하지 않는다** — 부팅 때 `max(notes_nodes.hlc) ∪ max(sync_documents.applied_max_hlc)`를 observe해서 재시드한다. 파생 상태라 크래시로 잃어도 되고, 저장된 클록이 실제 행보다 뒤처지는 역행 버그가 원리적으로 없다.
+- **HLC**: 21자 고정폭 `mmmmmmmmm-cc-dddddddd` — millis base36 소문자 9자 zero-pad, counter base36 2자, device 소문자 hex 8자. decode는 재인코딩 일치까지 요구한다(비정규형 거부, [hlc.rs:73-95](../../crates/notes-sync/src/hlc.rs#L73)). 빈 문자열은 "없음"이고 사전순 비교에서 언제나 진다. 발급 규칙: `now()`는 `millis = max(벽시계, 직전.millis)`, 같은 millis면 counter 증가 — 벽시계 역행에도 단조롭다. `observe(원격)`은 직전을 원격 최댓값 이상으로 끌어올려 병합 후 발급분이 항상 원격을 이기게 한다. **counter가 1,296을 넘으면 millis를 1 올리고 counter를 0으로** — 대량 붙여넣기가 한 트랜잭션에서 수천 노드를 스탬프하면 한 밀리초 안에서 실제로 넘친다. **클록은 영속하지 않는다** — 부팅 때 `max(notes_nodes.hlc) ∪ max(sync_documents.applied_max_hlc)`를 observe해서 재시드한다. 파생 상태라 크래시로 잃어도 되고, 저장된 클록이 실제 행보다 뒤처지는 역행 버그가 원리적으로 없다.
+- **기기 id (스탬프의 device 8자)**: 데이터베이스를 처음 열 때 한 번 정하고 다시 바꾸지 않는다([worker.rs](../../crates/notes-sqlite/src/worker.rs), `sync_meta.device_id`). 값은 **기계에서 유도한다** — `gethostuuid(2)`가 주는 16바이트(`IOPlatformUUID`와 같은 값)를 sha256으로 줄여 앞 4바이트를 hex로 적는다([hlc.rs](../../crates/notes-sync/src/hlc.rs), `device_seed`). vault는 데이터베이스보다 오래 산다. 같은 맥에서 데이터베이스를 다시 만들 때마다 새 기기가 되면 폴더에 남은 옛 세대 스탬프와 자기 자신이 싸운다. 이 맥의 `IOPlatformUUID`는 UUID version 5라서 지우고 재설치해도 같은 값이 나오고, App Sandbox와 hardened runtime 아래에서도 읽힌다(entitlement 불필요). 하드웨어 식별자 자체는 이 함수 밖으로 나가지 않는다 — 8자는 vault의 모든 파일에 실리고 vault는 공유 폴더에 놓이는 것이다.
+
+  **유도에 실패하면 랜덤값을 만들지 않고 provisioning이 실패한다.** 랜덤 id는 앱이 계속 도는 것처럼 보이게 하지만, 아무도 모르는 기기로서 vault에 스탬프를 찍고 그 정체를 다음 재설치에 버린다. 앱을 지웠다 다시 깔는 것은 사람이 하는 일이다.
+
+  **8자인 이유는 `mine` 판정이다.** `decide`는 스탬프의 device가 자기 것과 같으면 파일 내용을 행보다 우선해 채택하고 아무것도 기록하지 않는다(§6). 그래서 충돌은 순서가 어긋나는 정도가 아니라 한 기기가 다른 기기의 글을 조용히 가져가는 사고다. 4자는 기기 둘에서 1/65,536, 열에서 약 1/1,400이고 8자는 열에서 10^-8 수준이다. 유도가 "한 기계 = 한 writer"를 전제한다는 점도 같이 봐야 한다 — 한 기계에서 데이터베이스 둘이 같은 vault를 쓰면 둘의 id가 같아지고, 그때 서로의 파일이 정확히 이 분기에 걸린다.
 - **블록 id (`yid`)**: 12자 base64url, `^[A-Za-z0-9_-]{12}$`. 9바이트를 `URL_SAFE_NO_PAD`로 인코딩한 것이라 padding도 modulo 편향도 없다([id.rs:14-47](../../crates/notes-core/src/id.rs#L14)). **id 규칙은 하나다** — 도메인·파일·폴더 이름이 같은 값을 쓰고 유일한 예외가 home의 리터럴 `root`다. **대소문자를 접지 않는다**: base64url에서 `a`와 `A`는 다른 글자라 `Nd0000000abc`와 `Nd0000000ABC`는 두 블록이고 파일 내 유일성 검사도 파생 id 계산도 적힌 대로 읽는다. 접으면 합법인 문서가 중복이라는 이유로 거절된다. 복제 자식 id는 uuid v5로 파생한다 — 네임스페이스는 고정값 `7f9c2b14-5d63-4a08-9e21-3c6f0d8b4a52`, 이름은 `<부모 새 id>/<순번>`이고 결과 16바이트의 앞 9바이트를 인코딩해 `yid`로 만든다([tree.rs:39-46](../../crates/notes-core/src/tree.rs#L39)). 결정적이라 난수원 없이 core에서 만들 수 있다. 부모 id를 네임스페이스로 쓰지 않는 이유는 그 형태에 의존하지 않기 위해서다.
 
 **순번은 복사가 원본 서브트리를 훑는 순서다.** 훑기는 서브트리 루트에서 시작하는 **깊이 우선 문서 순서**이고, 형제는 sort_key 오름차순(동률이면 id 오름차순)으로 들어간다. **삭제된 행과 그 아래 전체는 훑지 않는다** — 복사는 살아 있는 것만 가져간다. 순번은 루트를 빼고 **1부터** 센다(루트는 명령이 준 id를 그대로 쓴다). 네임스페이스·이름 형식·앞 9바이트·훑는 순서 넷 중 무엇이 바뀌어도 같은 복제가 다른 id를 내므로, 넷 다 이 문단이 고정하는 계약이다.
@@ -165,7 +170,7 @@ vault/
 | 11 | `root_collapsed` | `true`\|`false` | 선택 | `false` |
 | 12 | `root_completed` | `true`\|`false` | 선택 | `false` |
 | 13 | `root_starred` | `true`\|`false` | 선택 | `false` |
-| 14 | `device_id` | 파일을 쓴 기기의 HLC device — 소문자 hex 4자 | 선택 | 모양이 다르면 없는 것으로 읽는다 |
+| 14 | `device_id` | 파일을 쓴 기기의 HLC device — 소문자 hex 8자 | 선택 | 모양이 다르면 없는 것으로 읽는다 |
 | 15 | `device_name` | 파일을 쓴 기기의 이름, 200바이트까지 | 선택 | `device_id`와 짝이다. 한쪽만 없거나 이름이 200바이트를 넘으면 둘 다 없는 것으로 읽는다 |
 | — | (미지 키 보존분) | 원문 라인 | — | 인정 키 전부 뒤, 닫는 `---` 앞 |
 
@@ -175,9 +180,9 @@ vault/
 
 **`updated`는 스탬프를 사람이 읽는 표기다.** base36 `max_hlc`는 파일을 연 사람에게 아무 말도 하지 않으므로, 같은 사실을 편집기·로그·달력이 다 아는 표기로 한 줄 더 쓴다. 적어 두는 것이 아니라 `max_hlc`에서 파생하므로 설명하는 스탬프와 어긋날 수 없다. **파일을 쓴 기기의 지역 시각으로 적고 offset을 함께 싣는다** — 편집한 사람이 보던 벽시계가 그대로 파일에 남고 offset이 붙어 있으니 어느 기기에서 읽어도 같은 순간을 가리킨다. 시간대가 다른 두 기기는 한 순간을 두 표기로 쓰지만 차이는 바이트에만 있다: 병합은 파일을 블록 단위로 비교하고 이 줄은 어느 블록에도 속하지 않아 남의 표기를 만나도 편집으로 읽지 않는다. 파일을 다시 쓰는 때는 문서가 바뀐 때이고 그때는 이 기기가 자기 자리를 말할 차례다. 파일에 적힌 값은 믿지 않는다: 손으로 고친 값은 교체되고, 이 키를 모르는 편집기가 지워 버린 파일은 다음 렌더에서 되찾는다.
 
-**`device_id`·`device_name`은 기기 id에 이름을 붙일 유일한 근거다.** 스탬프는 기기를 hex 4자로만 부르고, 그 4자가 어느 노트북인지 말해 주는 자리는 포맷 어디에도 없었다. 그래서 파일을 쓴 기기가 자기 id와 이름을 함께 적고, 파일을 받은 기기는 그 짝을 배워 둔다 — 설정의 "Overwritten notes"가 진 쪽·이긴 쪽 기기를 이름으로 부르는 근거가 이것이다. 성질은 `updated`와 같다: 파일을 쓴 기기가 자기 자리를 말하는 줄이고, 어느 블록에도 속하지 않아 남의 값을 만나도 병합이 편집으로 읽지 않으며, 다음 렌더가 다시 만든다. 이름이 바뀌면 그 기기의 다음 방출이 새 이름을 싣고, 받은 쪽은 마지막으로 배운 이름을 쓴다. **둘 중 하나라도 비면 아무것도 쓰지 않는다** — 이름만 있는 줄은 아무 기기도 가리키지 않고, 빈 값은 `max_hlc`와 같은 이유로 후행 공백 줄이 된다. 이름이 한 줄에 들어가지 않으면(줄바꿈이 들어 있으면) 역시 쓰지 않는다: 화면에는 이름 대신 id를 보일 답이 이미 있다.
+**`device_id`·`device_name`은 기기 id에 이름을 붙일 유일한 근거다.** 스탬프는 기기를 hex 8자로만 부르고, 그 8자가 어느 노트북인지 말해 주는 자리는 포맷 어디에도 없었다. 그래서 파일을 쓴 기기가 자기 id와 이름을 함께 적고, 파일을 받은 기기는 그 짝을 배워 둔다 — 설정의 "Overwritten notes"가 진 쪽·이긴 쪽 기기를 이름으로 부르는 근거가 이것이다. 성질은 `updated`와 같다: 파일을 쓴 기기가 자기 자리를 말하는 줄이고, 어느 블록에도 속하지 않아 남의 값을 만나도 병합이 편집으로 읽지 않으며, 다음 렌더가 다시 만든다. 이름이 바뀌면 그 기기의 다음 방출이 새 이름을 싣고, 받은 쪽은 마지막으로 배운 이름을 쓴다. **둘 중 하나라도 비면 아무것도 쓰지 않는다** — 이름만 있는 줄은 아무 기기도 가리키지 않고, 빈 값은 `max_hlc`와 같은 이유로 후행 공백 줄이 된다. 이름이 한 줄에 들어가지 않으면(줄바꿈이 들어 있으면) 역시 쓰지 않는다: 화면에는 이름 대신 id를 보일 답이 이미 있다.
 
-**읽는 쪽은 이 두 키를 남의 주장으로 읽는다.** 파일은 다른 기기가 쓴 것이고, 값은 기기 id로 키를 잡은 표에 들어간다. 그래서 `device_id`가 스탬프가 실을 수 있는 모양(소문자 hex 4자)이 아니면 기기를 가리키지 않는 값이므로 짝 전체를 버린다 — 받아 두면 어느 스탬프와도 만나지 않는 행이 남는다. 이름이 200바이트를 넘으면 이름이 아니라고 보고 역시 버리며, id는 그대로 화면에 나온다. 표가 커질 수 있는 상한이 파일 하나가 말할 수 있는 양이 아니라 id 공간(hex 4자)이 되는 것이 이 규칙의 값이다. **파일이 이 기기 자신의 id를 주장해도 이 기기 이름은 바뀌지 않는다**: id는 4자뿐이라 두 기기가 같은 값을 뽑을 수 있고, 남의 말로 자기 이름을 바꾸면 그 뒤로 이 기기가 쓰는 모든 파일에 그 이름이 실린다. 이 기기 이름은 기기 자신에게서만 온다. `trash.md`는 이 키를 싣지 않는다 — trash를 쓰는 기기는 페이지도 쓰므로 페이지에서 배우는 것으로 충분하다.
+**읽는 쪽은 이 두 키를 남의 주장으로 읽는다.** 파일은 다른 기기가 쓴 것이고, 값은 기기 id로 키를 잡은 표에 들어간다. 그래서 `device_id`가 스탬프가 실을 수 있는 모양(소문자 hex 8자)이 아니면 기기를 가리키지 않는 값이므로 짝 전체를 버린다 — 받아 두면 어느 스탬프와도 만나지 않는 행이 남는다. 이름이 200바이트를 넘으면 이름이 아니라고 보고 역시 버리며, id는 그대로 화면에 나온다. 표가 커질 수 있는 상한이 파일 하나가 말할 수 있는 양이 아니라 id 공간(hex 8자)이 되는 것이 이 규칙의 값이다. **파일이 이 기기 자신의 id를 주장해도 이 기기 이름은 바뀌지 않는다**: 8자를 기계에서 유도해도 두 기기가 같은 값을 뽑는 일이 아주 드물게 남아 있고, 남의 말로 자기 이름을 바꾸면 그 뒤로 이 기기가 쓰는 모든 파일에 그 이름이 실린다. 이 기기 이름은 기기 자신에게서만 온다. `trash.md`는 이 키를 싣지 않는다 — trash를 쓰는 기기는 페이지도 쓰므로 페이지에서 배우는 것으로 충분하다.
 
 **`max_hlc`는 두 번 읽힌다.** 문서가 밖으로 내놓는 값은 언제나 **내용에서 다시 계산한** 것이다 — 이 값이 부팅 클록을 시드하므로 손편집으로 미래로 밀린 키를 믿으면 그 뒤 모든 로컬 편집이 미래 스탬프를 받는다. 적힌 값은 **"이 파일이 얼마를 담고 있어야 했나"** 하나에만 쓴다. 노드 스탬프가 전부 footer에 있어서 파일 꼬리가 잘리면 증거도 같이 잘리고 내용은 거의 아무것도 아닌 값으로 합산된다. 그때 파일이 짧다고 말해 주는 것은 살아남은 frontmatter뿐이다. 둘 중 큰 값이 그 질문의 답이고([document.rs:49-51](../../crates/notes-sync/src/document.rs#L49)) 병합은 그 답으로 되쓰기 필요를 판정한다. 부풀린 값이 부르는 결과는 되쓰기 한 번이라 안전한 방향이다.
 
@@ -478,8 +483,8 @@ git 미보증 문구는 설정 화면의 vault 절에 둔다: "git으로도 동�
 | 페이지 id (회의록) | `Mnutes000001` |
 | 분할 문서 id | `Archive00001` |
 | 노드 id | `Nd00000000NN` |
-| device | `a3f2` |
-| HLC | `0swkd7qz4-00-a3f2`부터 counter 증가 |
+| device | `a3f2a3f2` |
+| HLC | `0swkd7qz4-00-a3f2a3f2`부터 counter 증가 |
 
 ### A. `Projects-PrJects00001/README.md`
 
@@ -488,11 +493,11 @@ git 미보증 문구는 설정 화면의 vault 절에 둔다: "git으로도 동�
 kind: yonalist-notes
 format_version: 1
 id: PrJects00001
-max_hlc: 0swkd7qz9-00-a3f2
+max_hlc: 0swkd7qz9-00-a3f2a3f2
 updated: 2041-10-11T15:19:09+09:00
-root_hlc: 0swkd7qz5-00-a3f2
+root_hlc: 0swkd7qz5-00-a3f2a3f2
 root_starred: true
-device_id: a3f2
+device_id: a3f2a3f2
 device_name: Suwon의 MacBook Pro
 ---
 # Projects
@@ -504,10 +509,10 @@ device_name: Suwon의 MacBook Pro
 - 정리한 것 <!-- yid: Nd0000000004 -->
 
 <!-- yonalist
-yid: Nd0000000001 t: 0swkd7qz6-00-a3f2
-yid: Nd0000000002 t: 0swkd7qz7-00-a3f2
-yid: Nd0000000003 t: 0swkd7qz8-00-a3f2 w: 320 px: 1280x720 bytes: 421904
-yid: Nd0000000004 t: 0swkd7qz9-00-a3f2 done collapsed
+yid: Nd0000000001 t: 0swkd7qz6-00-a3f2a3f2
+yid: Nd0000000002 t: 0swkd7qz7-00-a3f2a3f2
+yid: Nd0000000003 t: 0swkd7qz8-00-a3f2a3f2 w: 320 px: 1280x720 bytes: 421904
+yid: Nd0000000004 t: 0swkd7qz9-00-a3f2a3f2 done collapsed
 -->
 ```
 
@@ -521,7 +526,7 @@ note의 `이번 분기에 손대는 것만.`과 alt의 `아키텍처.png`에 백
 ---
 kind: yonalist-trash
 format_version: 1
-max_hlc: 0swkd7qzc-00-a3f2
+max_hlc: 0swkd7qzc-00-a3f2a3f2
 updated: 2041-10-11T15:19:09+09:00
 ---
 - Old page <!-- yid: Nd0000000005 -->
@@ -529,9 +534,9 @@ updated: 2041-10-11T15:19:09+09:00
   - Child <!-- yid: Nd0000000007 -->
 
 <!-- yonalist
-yid: Nd0000000005 t: 0swkd7qza-00-a3f2 from: root@4294967296
-yid: Nd0000000006 t: 0swkd7qzb-00-a3f2 from: PrJects00001@8589934592
-yid: Nd0000000007 t: 0swkd7qzc-00-a3f2 done
+yid: Nd0000000005 t: 0swkd7qza-00-a3f2a3f2 from: root@4294967296
+yid: Nd0000000006 t: 0swkd7qzb-00-a3f2a3f2 from: PrJects00001@8589934592
+yid: Nd0000000007 t: 0swkd7qzc-00-a3f2a3f2 done
 -->
 ```
 
@@ -546,16 +551,16 @@ format_version: 1
 id: Archive00001
 parent: PrJects00001
 sort_key: 4294967296
-max_hlc: 0swkd7qze-00-a3f2
+max_hlc: 0swkd7qze-00-a3f2a3f2
 updated: 2041-10-11T15:19:09+09:00
-root_hlc: 0swkd7qzd-00-a3f2
+root_hlc: 0swkd7qzd-00-a3f2a3f2
 ---
 # 2024 아카이브
 
 - 3월 회고 <!-- yid: Nd0000000008 -->
 
 <!-- yonalist
-yid: Nd0000000008 t: 0swkd7qze-00-a3f2
+yid: Nd0000000008 t: 0swkd7qze-00-a3f2a3f2
 -->
 ```
 
@@ -566,7 +571,7 @@ yid: Nd0000000008 t: 0swkd7qze-00-a3f2
 ```
 
 ```
-yid: Archive00001 t: 0swkd7qzd-00-a3f2 split
+yid: Archive00001 t: 0swkd7qzd-00-a3f2a3f2 split
 ```
 
 덮는 계약: `parent`·`sort_key` 존재, `split` 토큰, 링크 대상 경로, **자식 문서의 `id`가 부모 줄의 `yid`와 같다는 것**, split 항목에 상태 토큰이 없다는 것.
@@ -578,9 +583,9 @@ yid: Archive00001 t: 0swkd7qzd-00-a3f2 split
 kind: yonalist-notes
 format_version: 1
 id: root
-max_hlc: 0swkd7qz6-00-a3f2
+max_hlc: 0swkd7qz6-00-a3f2a3f2
 updated: 2041-10-11T15:19:09+09:00
-root_hlc: 0swkd7qz4-00-a3f2
+root_hlc: 0swkd7qz4-00-a3f2a3f2
 ---
 # Home
 
@@ -588,8 +593,8 @@ root_hlc: 0swkd7qz4-00-a3f2
 - [회의록](회의록-Mnutes000001/README.md) <!-- yid: Mnutes000001 -->
 
 <!-- yonalist
-yid: PrJects00001 t: 0swkd7qz5-00-a3f2 split
-yid: Mnutes000001 t: 0swkd7qz6-00-a3f2 split
+yid: PrJects00001 t: 0swkd7qz5-00-a3f2a3f2 split
+yid: Mnutes000001 t: 0swkd7qz6-00-a3f2a3f2 split
 -->
 ```
 

@@ -7,7 +7,13 @@ use rusqlite::{Connection, Error};
 
 const MILLIS_WIDTH: usize = 9;
 const COUNTER_WIDTH: usize = 2;
-const DEVICE_WIDTH: usize = 4;
+/// Thirty-two bits of device, not sixteen. The field is what `decide` reads to
+/// answer "did I write this?", and on a match it adopts the file's content over
+/// the row's without recording anything. So a collision is not a misordering,
+/// it is one device silently taking another's text. Four characters put two
+/// devices at one in 65 536 and ten at roughly one in 1 400; eight put ten at
+/// about one in 10^8.
+const DEVICE_WIDTH: usize = 8;
 /// `36^9 - 1` and `36^2 - 1`: the largest values the fixed-width fields hold.
 const MAX_MILLIS: u64 = 101_559_956_668_415;
 const MAX_COUNTER: u32 = 1_295;
@@ -16,7 +22,7 @@ const ENCODED_WIDTH: usize = MILLIS_WIDTH + COUNTER_WIDTH + DEVICE_WIDTH + 2;
 /// A hybrid logical clock reading: wall-clock milliseconds, a counter that
 /// orders readings inside one millisecond, and the device that issued it.
 ///
-/// Encoded it is 17 characters of fixed width, which is the whole point:
+/// Encoded it is `ENCODED_WIDTH` characters of fixed width, which is the whole point:
 /// comparing the strings compares the times, so Rust, SQL and anything reading
 /// the vault agree on the order without parsing anything.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,7 +41,9 @@ impl Hlc {
             return Err("HLC counter exceeds the fixed-width encoding.".into());
         }
         if device.len() != DEVICE_WIDTH || !device.bytes().all(is_lowercase_hex) {
-            return Err("HLC device must be four lowercase hexadecimal characters.".into());
+            return Err(format!(
+                "HLC device must be {DEVICE_WIDTH} lowercase hexadecimal characters."
+            ));
         }
         Ok(Self {
             millis,
@@ -72,7 +80,7 @@ impl Hlc {
     /// would break the "string order is time order" contract.
     pub fn decode(value: &str) -> Result<Self, String> {
         if value.len() != ENCODED_WIDTH {
-            return Err("HLC must be 17 characters.".into());
+            return Err(format!("HLC must be {ENCODED_WIDTH} characters."));
         }
         let bytes = value.as_bytes();
         if bytes[MILLIS_WIDTH] != b'-' || bytes[MILLIS_WIDTH + COUNTER_WIDTH + 1] != b'-' {
@@ -97,13 +105,21 @@ pub fn is_device_id(value: &str) -> bool {
     value.len() == DEVICE_WIDTH && value.bytes().all(is_lowercase_hex)
 }
 
-/// The four characters this machine should stamp with, for whoever is
-/// provisioning a database that has none yet.
+/// The characters this machine should stamp with, for whoever is provisioning a
+/// database that has none yet. `None` when the machine will not say which
+/// machine it is.
 ///
 /// Derived rather than drawn at random, because a vault outlives a database. A
 /// database rebuilt on the same Mac used to become a second device, and the
 /// files left in the vault then held two generations of stamps disagreeing with
 /// each other over notes one person wrote.
+///
+/// `None` rather than a random value, for the same reason. A random id looks
+/// like it kept the app running, and it does — as a device nobody has heard of,
+/// stamping over notes the vault already holds under an identity that will be
+/// thrown away and replaced by another the next time this happens. Reinstalling
+/// an app is something people do. So the failure is reported instead: a caller
+/// that cannot name this device must say so rather than invent a name.
 ///
 /// Only ever a seed: the id a database already holds is the one it keeps. The
 /// machine's own identifier can change — `man 2 gethostuuid` says as much, and
@@ -111,21 +127,18 @@ pub fn is_device_id(value: &str) -> bool {
 /// that has already stamped rows must not be renamed underneath them.
 ///
 /// Hashed, never carried through: the hardware identifier travels no further
-/// than this function. These four characters go into every file in the vault,
-/// and a vault is something people put in a shared folder.
-pub fn device_seed() -> String {
-    machine_seed()
-        .map(|bytes| {
-            use sha2::Digest;
-            let digest = sha2::Sha256::digest(bytes);
-            digest
-                .iter()
-                .take(2)
-                .map(|byte| format!("{byte:02x}"))
-                .collect()
-        })
-        // A machine that will not say who it is still has to be able to stamp.
-        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..DEVICE_WIDTH].to_owned())
+/// than this function. These characters go into every file in the vault, and a
+/// vault is something people put in a shared folder.
+pub fn device_seed() -> Option<String> {
+    machine_seed().map(|bytes| {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(bytes);
+        digest
+            .iter()
+            .take(DEVICE_WIDTH / 2)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    })
 }
 
 /// What this machine calls itself, in bytes. `gethostuuid` reads the same value
@@ -317,13 +330,13 @@ mod tests {
     use proptest::prelude::*;
 
     fn clock() -> Clock {
-        Clock::new("a3f2").expect("clock")
+        Clock::new("a3f2a3f2").expect("clock")
     }
 
     #[test]
     fn a_reading_from_the_far_future_is_left_behind() {
         let clock = clock();
-        let runaway = Hlc::new(MAX_MILLIS, MAX_COUNTER, "b1c2").expect("runaway");
+        let runaway = Hlc::new(MAX_MILLIS, MAX_COUNTER, "b1c2b1c2").expect("runaway");
 
         assert!(clock.is_beyond_drift(&runaway));
         // Taking it carries past the encoding ceiling and leaves `now` erroring
@@ -334,21 +347,31 @@ mod tests {
 
     #[test]
     fn a_non_ascii_reading_is_refused_without_panicking() {
-        assert!(Hlc::decode("00000000é-0-a3f2").is_err());
+        let malformed = "00000000é-0-a3f2a3f2";
+        assert_eq!(
+            malformed.len(),
+            ENCODED_WIDTH,
+            "the length guard runs first, so a shorter value never reaches the bytes"
+        );
+        assert!(Hlc::decode(malformed).is_err());
     }
 
     #[test]
     fn encode_decode_round_trips_canonically() {
-        let hlc = Hlc::new(1_234_567, 42, "a3f2").expect("hlc");
+        let hlc = Hlc::new(1_234_567, 42, "a3f2a3f2").expect("hlc");
         assert_eq!(Hlc::decode(&hlc.encode()).expect("decode"), hlc);
 
         for malformed in [
+            // Too short, too long, wrong separators, then a device that is the
+            // right width and still not a device id: each has to be refused for
+            // its own reason, so every one but the first is exactly
+            // `ENCODED_WIDTH` bytes.
             "",
-            "0swkd7qz5-00-a3f2x",
-            "0swkd7qz5:00:a3f2",
-            "0SWKD7QZ5-00-a3f2",
-            "0swkd7qz5-00-A3F2",
-            "0swkd7qz5-00-zzzz",
+            "0swkd7qz5-00-a3f2a3f2x",
+            "0swkd7qz5:00:a3f2a3f2",
+            "0SWKD7QZ5-00-a3f2a3f2",
+            "0swkd7qz5-00-A3F2A3F2",
+            "0swkd7qz5-00-zzzzzzzz",
         ] {
             assert!(
                 Hlc::decode(malformed).is_err(),
@@ -372,7 +395,7 @@ mod tests {
     #[test]
     fn observe_makes_the_next_now_beat_the_remote() {
         let clock = clock();
-        let remote = Hlc::new(9_999, 7, "b1c2").expect("remote");
+        let remote = Hlc::new(9_999, 7, "b1c2b1c2").expect("remote");
 
         clock.observe(&remote);
 
@@ -408,15 +431,15 @@ mod tests {
         fn prop_hlc_string_order_equals_component_order(
             left_millis in 0u64..=MAX_MILLIS,
             left_counter in 0u32..=MAX_COUNTER,
-            left_device in "[0-9a-f]{4}",
+            left_device in "[0-9a-f]{8}",
             right_millis in 0u64..=MAX_MILLIS,
             right_counter in 0u32..=MAX_COUNTER,
-            right_device in "[0-9a-f]{4}",
+            right_device in "[0-9a-f]{8}",
         ) {
             let left = Hlc::new(left_millis, left_counter, &left_device).expect("left");
             let right = Hlc::new(right_millis, right_counter, &right_device).expect("right");
 
-            prop_assert_eq!(left.encode().len(), 17);
+            prop_assert_eq!(left.encode().len(), ENCODED_WIDTH);
             prop_assert_eq!(
                 left.encode() < right.encode(),
                 (left_millis, left_counter, left_device.as_str())
@@ -430,7 +453,7 @@ mod tests {
         fn prop_an_encoded_hlc_decodes_to_itself(
             millis in 0u64..=MAX_MILLIS,
             counter in 0u32..=MAX_COUNTER,
-            device in "[0-9a-f]{4}",
+            device in "[0-9a-f]{8}",
         ) {
             let hlc = Hlc::new(millis, counter, &device).expect("hlc");
 
@@ -440,12 +463,12 @@ mod tests {
 
     #[test]
     fn encoding_orders_lexicographically_like_time() {
-        let earlier = Hlc::new(1, 0, "a3f2").expect("hlc");
-        let later = Hlc::new(1, 1, "a3f2").expect("hlc");
-        let much_later = Hlc::new(2, 0, "a3f2").expect("hlc");
+        let earlier = Hlc::new(1, 0, "a3f2a3f2").expect("hlc");
+        let later = Hlc::new(1, 1, "a3f2a3f2").expect("hlc");
+        let much_later = Hlc::new(2, 0, "a3f2a3f2").expect("hlc");
 
         assert!(earlier.encode() < later.encode());
         assert!(later.encode() < much_later.encode());
-        assert_eq!(earlier.encode().len(), 17);
+        assert_eq!(earlier.encode().len(), ENCODED_WIDTH);
     }
 }

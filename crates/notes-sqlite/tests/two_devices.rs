@@ -871,7 +871,7 @@ fn picture(device: &Device, node_id: &str) {
     // The stamping triggers call it, and it is registered per connection.
     notes_sync::hlc::register(
         &connection,
-        std::sync::Arc::new(notes_sync::hlc::Clock::new("cccc").expect("clock")),
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("cccccccc").expect("clock")),
     )
     .expect("register");
     connection
@@ -1393,7 +1393,7 @@ fn an_edited_echo_keeps_the_row_in_domain_form() {
             }
             let start = line.find(" t: ").expect("a stamp") + 4;
             let end = start + line[start..].find(' ').expect("the end of it");
-            format!("{}zzzzzzzzz-00-dddd{}", &line[..start], &line[end..])
+            format!("{}zzzzzzzzz-00-dddddddd{}", &line[..start], &line[end..])
                 .replace("w: 480", "w: 300")
         })
         .collect::<Vec<_>>()

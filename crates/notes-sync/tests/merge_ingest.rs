@@ -9,7 +9,7 @@ use notes_sync::hlc::{Clock, Hlc};
 use notes_sync::merger::{MergeInput, merge_document};
 use rusqlite::{Connection, OptionalExtension};
 
-const DEVICE: &str = "cccc";
+const DEVICE: &str = "cccccccc";
 const PAGE_ID: &str = "PrJects00001";
 const NODE_ID: &str = "Nd0000000001";
 /// Inside the encoding, far outside the day the drift guard allows: about the
@@ -37,7 +37,7 @@ fn database() -> Connection {
             // test asserting on dirtiness would be reading the fixture.
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
              VALUES ('root', NULL, 0, 'page', 'Home', ?1)",
-            [Hlc::new(1, 0, "a3f2").expect("hlc").encode()],
+            [Hlc::new(1, 0, "a3f2a3f2").expect("hlc").encode()],
         )
         .expect("root");
     connection
@@ -157,8 +157,8 @@ fn conflicts(connection: &Connection) -> i64 {
 fn a_canonical_document_merges_into_an_empty_database() {
     let mut connection = database();
     let file = notes_sync::document::VaultFile::Page(page(
-        vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-        &stamp(5, "a3f2"),
+        vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought")],
+        &stamp(5, "a3f2a3f2"),
     ));
     let transaction = connection.transaction().expect("begin");
 
@@ -166,7 +166,7 @@ fn a_canonical_document_merges_into_an_empty_database() {
 
     assert!(outcome.applied > 0);
     assert_eq!(text_of(&transaction, NODE_ID).as_deref(), Some("Thought"));
-    assert_eq!(hlc_of(&transaction, NODE_ID), stamp(5, "a3f2"));
+    assert_eq!(hlc_of(&transaction, NODE_ID), stamp(5, "a3f2a3f2"));
     assert_eq!(
         text_of(&transaction, PAGE_ID).as_deref(),
         Some("Projects"),
@@ -182,8 +182,8 @@ fn a_node_missing_from_the_file_is_never_deleted() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -193,7 +193,7 @@ fn a_node_missing_from_the_file_is_never_deleted() {
     let outcome = merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(6, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(6, "a3f2a3f2"))),
         &input(),
         None,
     )
@@ -218,8 +218,8 @@ fn a_newer_file_wins_and_an_older_one_loses() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "First")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "First")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -230,8 +230,8 @@ fn a_newer_file_wins_and_an_older_one_loses() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(9, "a3f2"), "Second")],
-            &stamp(9, "a3f2"),
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "Second")],
+            &stamp(9, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -243,8 +243,8 @@ fn a_newer_file_wins_and_an_older_one_loses() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(7, "a3f2"), "Stale")],
-            &stamp(7, "a3f2"),
+            vec![node(NODE_ID, &stamp(7, "a3f2a3f2"), "Stale")],
+            &stamp(7, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -280,8 +280,8 @@ fn an_older_file_saying_the_same_thing_is_not_a_conflict() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(9, "a3f2"), "Same")],
-            &stamp(9, "a3f2"),
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "Same")],
+            &stamp(9, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -292,8 +292,8 @@ fn an_older_file_saying_the_same_thing_is_not_a_conflict() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(7, "a3f2"), "Same")],
-            &stamp(7, "a3f2"),
+            vec![node(NODE_ID, &stamp(7, "a3f2a3f2"), "Same")],
+            &stamp(7, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -319,8 +319,8 @@ fn an_older_file_saying_something_else_still_records_the_loss() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(9, "a3f2"), "First")],
-            &stamp(9, "a3f2"),
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "First")],
+            &stamp(9, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -331,8 +331,8 @@ fn an_older_file_saying_something_else_still_records_the_loss() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(7, "a3f2"), "Stale")],
-            &stamp(7, "a3f2"),
+            vec![node(NODE_ID, &stamp(7, "a3f2a3f2"), "Stale")],
+            &stamp(7, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -351,12 +351,12 @@ fn a_loser_is_recorded_once_in_the_conflict_log() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let winner = notes_sync::document::VaultFile::Page(page(
-        vec![node(NODE_ID, &stamp(9, "a3f2"), "Winner")],
-        &stamp(9, "a3f2"),
+        vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "Winner")],
+        &stamp(9, "a3f2a3f2"),
     ));
     let loser = notes_sync::document::VaultFile::Page(page(
-        vec![node(NODE_ID, &stamp(7, "a3f2"), "Loser")],
-        &stamp(7, "a3f2"),
+        vec![node(NODE_ID, &stamp(7, "a3f2a3f2"), "Loser")],
+        &stamp(7, "a3f2a3f2"),
     ));
     merge_document(&transaction, &clock(), &winner, &input(), None).expect("seed");
 
@@ -375,8 +375,8 @@ fn a_loser_is_recorded_once_in_the_conflict_log() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(11, "a3f2"), "Later")],
-            &stamp(11, "a3f2"),
+            vec![node(NODE_ID, &stamp(11, "a3f2a3f2"), "Later")],
+            &stamp(11, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -401,7 +401,7 @@ fn an_unstamped_bullet_gets_a_fresh_yid_and_stamp() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
             vec![node("", "", "Typed by hand")],
-            &stamp(5, "a3f2"),
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -438,15 +438,15 @@ fn a_merged_stamp_survives_the_stamping_triggers() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
     )
     .expect("merge");
 
-    assert_eq!(hlc_of(&transaction, NODE_ID), stamp(5, "a3f2"));
+    assert_eq!(hlc_of(&transaction, NODE_ID), stamp(5, "a3f2a3f2"));
     let dirty: i64 = transaction
         .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
             row.get(0)
@@ -459,13 +459,13 @@ fn a_merged_stamp_survives_the_stamping_triggers() {
 fn unknown_extras_are_upserted_with_the_node() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mut carrier = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    let mut carrier = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought");
     carrier.unknown_tokens = vec!["future:".to_owned(), "value".to_owned()];
 
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(vec![carrier], &stamp(5, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(vec![carrier], &stamp(5, "a3f2a3f2"))),
         &input(),
         None,
     )
@@ -488,7 +488,7 @@ fn unknown_extras_are_upserted_with_the_node() {
 fn a_future_hlc_beyond_drift_is_restamped_and_logged() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2a3f2")
         .expect("far")
         .encode();
 
@@ -519,7 +519,7 @@ fn a_future_hlc_beyond_drift_is_restamped_and_logged() {
 fn a_drifted_hlc_is_not_observed() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2a3f2")
         .expect("far")
         .encode();
     let clock = clock();
@@ -548,7 +548,7 @@ fn a_drifted_hlc_is_not_observed() {
 fn a_drift_replay_before_write_back_is_quiet() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2a3f2")
         .expect("far")
         .encode();
     let file = notes_sync::document::VaultFile::Page(page(
@@ -576,8 +576,12 @@ fn a_dirty_local_loser_is_logged_before_it_is_overwritten() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Mine, not yet exported")],
-            &stamp(5, "a3f2"),
+            vec![node(
+                NODE_ID,
+                &stamp(5, "a3f2a3f2"),
+                "Mine, not yet exported",
+            )],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -594,8 +598,8 @@ fn a_dirty_local_loser_is_logged_before_it_is_overwritten() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(9, "a3f2"), "Theirs")],
-            &stamp(9, "a3f2"),
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "Theirs")],
+            &stamp(9, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -615,8 +619,8 @@ fn merging_the_same_document_twice_changes_nothing() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let file = notes_sync::document::VaultFile::Page(page(
-        vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-        &stamp(5, "a3f2"),
+        vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought")],
+        &stamp(5, "a3f2a3f2"),
     ));
     merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
 
@@ -678,7 +682,7 @@ fn a_local_hand_edit_is_restamped_as_authoring() {
 /// device merged first, so the content decides and both sides agree.
 #[test]
 fn a_remote_same_hlc_conflict_breaks_ties_by_content_hash() {
-    let theirs = stamp(5, "a3f2");
+    let theirs = stamp(5, "a3f2a3f2");
     let mut winners = Vec::new();
     for order in [("Alpha", "Omega"), ("Omega", "Alpha")] {
         let mut connection = database();
@@ -731,7 +735,7 @@ fn a_reorder_touches_only_the_moved_sibling() {
     merge_document(
         &transaction,
         &clock(),
-        &ordered([NODE_ID, second_id, third_id], &stamp(5, "a3f2")),
+        &ordered([NODE_ID, second_id, third_id], &stamp(5, "a3f2a3f2")),
         &input(),
         None,
     )
@@ -742,13 +746,13 @@ fn a_reorder_touches_only_the_moved_sibling() {
     // The third moves to the front, and only its line gets a new stamp.
     let mut moved = page(
         vec![
-            node(third_id, &stamp(9, "a3f2"), "Node 03"),
-            node(NODE_ID, &stamp(5, "a3f2"), "Node 01"),
-            node(second_id, &stamp(5, "a3f2"), "Node 02"),
+            node(third_id, &stamp(9, "a3f2a3f2"), "Node 03"),
+            node(NODE_ID, &stamp(5, "a3f2a3f2"), "Node 01"),
+            node(second_id, &stamp(5, "a3f2a3f2"), "Node 02"),
         ],
-        &stamp(9, "a3f2"),
+        &stamp(9, "a3f2a3f2"),
     );
-    moved.root.hlc = stamp(5, "a3f2");
+    moved.root.hlc = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -779,7 +783,7 @@ fn a_reorder_touches_only_the_moved_sibling() {
 }
 
 fn second_page() -> PageDocument {
-    let mut document = page(Vec::new(), &stamp(5, "a3f2"));
+    let mut document = page(Vec::new(), &stamp(5, "a3f2a3f2"));
     document.id = DocumentId::Node("Mnutes000001".to_owned());
     document.root.title = "Second".to_owned();
     document
@@ -925,14 +929,14 @@ fn a_drifted_file_logs_the_row_it_overwrote() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Mine")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Mine")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
     )
     .expect("seed");
-    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2a3f2")
         .expect("far")
         .encode();
 
@@ -970,7 +974,7 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
     let transaction = connection.transaction().expect("begin");
     let second_id = "Nd0000000002";
     let third_id = "Nd0000000003";
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -988,11 +992,11 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
 
     let mut moved = page(
         vec![
-            node(third_id, &stamp(9, "a3f2"), "Node 03"),
+            node(third_id, &stamp(9, "a3f2a3f2"), "Node 03"),
             node(NODE_ID, &seeded, "Node 01"),
             node(second_id, &seeded, "Node 02"),
         ],
-        &stamp(9, "a3f2"),
+        &stamp(9, "a3f2a3f2"),
     );
     moved.root.hlc = seeded.clone();
     let outcome = merge_document(
@@ -1027,7 +1031,7 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
     let a = "Nd0000000002";
     let b = "Nd0000000003";
     let last = "Nd0000000004";
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     // Only the node that actually moved carries a new stamp — the others are
     // unchanged, which is what leaves the gap to be eaten.
     let order = |ids: [&str; 4], mover: &str, millis: u64| {
@@ -1035,14 +1039,14 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
             ids.iter()
                 .map(|id| {
                     let mark = if *id == mover {
-                        stamp(millis, "a3f2")
+                        stamp(millis, "a3f2a3f2")
                     } else {
                         seeded.clone()
                     };
                     node(id, &mark, &format!("Node {}", &id[10..]))
                 })
                 .collect(),
-            &stamp(millis, "a3f2"),
+            &stamp(millis, "a3f2a3f2"),
         );
         document.root.hlc = seeded.clone();
         notes_sync::document::VaultFile::Page(document)
@@ -1159,8 +1163,8 @@ fn deletion_needs_trash_evidence() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -1168,12 +1172,12 @@ fn deletion_needs_trash_evidence() {
     .expect("seed");
     assert_eq!(deleted_flag(&transaction, NODE_ID), 0);
 
-    let mut gone = node(NODE_ID, &stamp(9, "a3f2"), "Thought");
+    let mut gone = node(NODE_ID, &stamp(9, "a3f2a3f2"), "Thought");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(9, "a3f2")),
+        &trash(vec![gone], &stamp(9, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -1188,12 +1192,12 @@ fn deletion_needs_trash_evidence() {
 fn a_deletion_and_an_edit_compete_by_hlc() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(5, "a3f2")),
+        &trash(vec![gone], &stamp(5, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -1204,8 +1208,8 @@ fn a_deletion_and_an_edit_compete_by_hlc() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(9, "a3f2"), "Still wanted")],
-            &stamp(9, "a3f2"),
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "Still wanted")],
+            &stamp(9, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -1234,12 +1238,12 @@ fn a_deletion_and_an_edit_compete_by_hlc() {
 fn restoring_from_trash_puts_the_node_back_where_it_was() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought");
     gone.from = Some((PAGE_ID.to_owned(), 8_589_934_592));
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(5, "a3f2")),
+        &trash(vec![gone], &stamp(5, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -1264,14 +1268,14 @@ fn a_trash_child_takes_its_place_from_its_line() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let child_id = "Nd0000000007";
-    let mut parent = node(NODE_ID, &stamp(5, "a3f2"), "Deleted");
+    let mut parent = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Deleted");
     parent.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
-    parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
+    parent.children = vec![node(child_id, &stamp(5, "a3f2a3f2"), "Child")];
 
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![parent], &stamp(5, "a3f2")),
+        &trash(vec![parent], &stamp(5, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -1296,13 +1300,13 @@ fn a_trash_root_whose_parent_is_unknown_gets_a_placeholder() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let unknown_parent = "Archive00001";
-    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought");
     gone.from = Some((unknown_parent.to_owned(), 4_294_967_296));
 
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(5, "a3f2")),
+        &trash(vec![gone], &stamp(5, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -1321,9 +1325,9 @@ fn a_trash_root_whose_parent_is_unknown_gets_a_placeholder() {
 fn merging_the_same_trash_twice_changes_nothing() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
-    let file = trash(vec![gone], &stamp(5, "a3f2"));
+    let file = trash(vec![gone], &stamp(5, "a3f2a3f2"));
     merge_document(&transaction, &clock(), &file, &trash_input(), None).expect("first");
 
     let outcome =
@@ -1343,7 +1347,7 @@ fn merging_the_same_trash_twice_changes_nothing() {
 #[test]
 fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
     let live = "Nd0000000002";
-    let base = stamp(5, "a3f2");
+    let base = stamp(5, "a3f2a3f2");
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     merge_document(
@@ -1357,12 +1361,12 @@ fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
         None,
     )
     .expect("seed");
-    let mut gone = node(NODE_ID, &stamp(20, "a3f2"), "Thought");
+    let mut gone = node(NODE_ID, &stamp(20, "a3f2a3f2"), "Thought");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(20, "a3f2")),
+        &trash(vec![gone], &stamp(20, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -1371,7 +1375,7 @@ fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
     // The page file swaps the two lines and stamps the claim, while both node
     // stamps stay where they were: the deletion still wins the content, and
     // both rows adopt a place without anything being written.
-    let claimed = stamp(9, "a3f2");
+    let claimed = stamp(9, "a3f2a3f2");
     let claim = |id: &str, prev: &str, text: &str| {
         let mut carrier = node(id, &base, text);
         carrier.place = Some((prev.to_owned(), claimed.clone()));
@@ -1430,15 +1434,15 @@ fn a_claim_from_the_trash_on_a_row_that_outlived_it_is_named_as_changed() {
     let second = "Nd0000000004";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mut parent = node(NODE_ID, &stamp(20, "a3f2"), "Kept");
+    let mut parent = node(NODE_ID, &stamp(20, "a3f2a3f2"), "Kept");
     parent.children = vec![
-        node(first, &stamp(20, "a3f2"), "One"),
-        node(second, &stamp(20, "a3f2"), "Two"),
+        node(first, &stamp(20, "a3f2a3f2"), "One"),
+        node(second, &stamp(20, "a3f2a3f2"), "Two"),
     ];
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(20, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(20, "a3f2a3f2"))),
         &input(),
         None,
     )
@@ -1447,20 +1451,20 @@ fn a_claim_from_the_trash_on_a_row_that_outlived_it_is_named_as_changed() {
     // The deletion is older than every row it names, so it loses all three —
     // but its claim on the two children is newer than the one they hold, and
     // that is adopted on rows still very much on the page.
-    let claimed = stamp(30, "a3f2");
+    let claimed = stamp(30, "a3f2a3f2");
     let claim = |id: &str, prev: &str, text: &str| {
-        let mut carrier = node(id, &stamp(5, "a3f2"), text);
+        let mut carrier = node(id, &stamp(5, "a3f2a3f2"), text);
         carrier.place = Some((prev.to_owned(), claimed.clone()));
         carrier
     };
-    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Kept");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Kept");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     gone.children = vec![claim(second, "", "Two"), claim(first, second, "One")];
 
     let outcome = merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(30, "a3f2")),
+        &trash(vec![gone], &stamp(30, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -1512,7 +1516,7 @@ fn a_cycle_parks_the_same_node_for_the_same_input() {
     for rotation in [false, true] {
         let mut connection = database();
         let transaction = connection.transaction().expect("begin");
-        let seeded = stamp(5, "a3f2");
+        let seeded = stamp(5, "a3f2a3f2");
         merge_document(
             &transaction,
             &clock(),
@@ -1529,13 +1533,13 @@ fn a_cycle_parks_the_same_node_for_the_same_input() {
         .expect("seed");
         let pairs = if rotation {
             [
-                (first, second, stamp(11, "bbb2")),
-                (second, first, stamp(9, "a3f2")),
+                (first, second, stamp(11, "bbb2bbb2")),
+                (second, first, stamp(9, "a3f2a3f2")),
             ]
         } else {
             [
-                (second, first, stamp(9, "a3f2")),
-                (first, second, stamp(11, "bbb2")),
+                (second, first, stamp(9, "a3f2a3f2")),
+                (first, second, stamp(11, "bbb2bbb2")),
             ]
         };
         for (child, parent, mark) in pairs {
@@ -1590,7 +1594,7 @@ fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
     let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -1637,7 +1641,7 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
     let parent = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -1721,7 +1725,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
     ] {
         let mut connection = database();
         let transaction = connection.transaction().expect("begin");
-        let seeded = stamp(5, "a3f2");
+        let seeded = stamp(5, "a3f2a3f2");
         let file = notes_sync::document::VaultFile::Page(page(
             vec![node("Nd0000000001", &seeded, "First")],
             &seeded,
@@ -1771,7 +1775,7 @@ fn a_copy_under_an_unknown_name_does_not_take_the_documents_path() {
     let vault = tempfile::tempdir().expect("vault");
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     let file =
         notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &seeded, "First")], &seeded));
     merge_document(&transaction, &clock(), &file, &input(), Some(vault.path())).expect("the page");
@@ -1818,7 +1822,7 @@ fn a_move_is_adopted_when_the_recorded_file_is_gone() {
     let vault = tempfile::tempdir().expect("vault");
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     let file =
         notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &seeded, "First")], &seeded));
     merge_document(&transaction, &clock(), &file, &input(), Some(vault.path())).expect("the page");
@@ -1858,7 +1862,7 @@ fn either_order_of_an_icloud_duplicate_ends_on_the_documents_own_file() {
         let vault = tempfile::tempdir().expect("vault");
         let mut connection = database();
         let transaction = connection.transaction().expect("begin");
-        let seeded = stamp(5, "a3f2");
+        let seeded = stamp(5, "a3f2a3f2");
         let file = notes_sync::document::VaultFile::Page(page(
             vec![node(NODE_ID, &seeded, "First")],
             &seeded,
@@ -1936,7 +1940,7 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
     let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -1965,8 +1969,8 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(node_id, &stamp(9, "bbb2"), "Theirs")],
-            &stamp(9, "bbb2"),
+            vec![node(node_id, &stamp(9, "bbb2bbb2"), "Theirs")],
+            &stamp(9, "bbb2bbb2"),
         )),
         &input(),
         None,
@@ -1999,7 +2003,7 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
     let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -2015,13 +2019,13 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
         .execute("DELETE FROM sync_dirty_nodes", ())
         .expect("clear");
 
-    let mut deleted = node(node_id, &stamp(9, "bbb2"), "Taken out");
+    let mut deleted = node(node_id, &stamp(9, "bbb2bbb2"), "Taken out");
     deleted.from = Some(("PrJects00001".to_owned(), 4_294_967_296));
     let outcome = merge_document(
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Trash(notes_sync::document::TrashDocument {
-            max_hlc: stamp(9, "bbb2"),
+            max_hlc: stamp(9, "bbb2bbb2"),
             nodes: vec![deleted],
         }),
         &notes_sync::merger::MergeInput {
@@ -2049,7 +2053,7 @@ fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
     let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     let mut split = page(vec![node(node_id, &seeded, "Inside")], &seeded);
     split.id = DocumentId::Node(node_id.to_owned());
     split.parent = Some(PAGE_ID.to_owned());
@@ -2085,7 +2089,7 @@ fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
     let second = "Nd0000000002";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -2101,8 +2105,8 @@ fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
     )
     .expect("seed");
     for (child, parent, mark) in [
-        (second, first, stamp(9, "a3f2")),
-        (first, second, stamp(11, "bbb2")),
+        (second, first, stamp(9, "a3f2a3f2")),
+        (first, second, stamp(11, "bbb2bbb2")),
     ] {
         transaction
             .execute(
@@ -2149,24 +2153,24 @@ fn an_orphaned_live_child_parks_on_the_recovery_page() {
     let transaction = connection.transaction().expect("begin");
     let parent_id = "Nd0000000001";
     let child_id = "Nd0000000002";
-    let mut parent = node(parent_id, &stamp(5, "a3f2"), "Parent");
-    parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
+    let mut parent = node(parent_id, &stamp(5, "a3f2a3f2"), "Parent");
+    parent.children = vec![node(child_id, &stamp(5, "a3f2a3f2"), "Child")];
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(5, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(5, "a3f2a3f2"))),
         &input(),
         None,
     )
     .expect("seed");
 
     // The parent is deleted elsewhere; the child is edited elsewhere, later.
-    let mut gone = node(parent_id, &stamp(9, "a3f2"), "Parent");
+    let mut gone = node(parent_id, &stamp(9, "a3f2a3f2"), "Parent");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(9, "a3f2")),
+        &trash(vec![gone], &stamp(9, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -2194,7 +2198,7 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
     for reversed in [false, true] {
         let mut connection = database();
         let transaction = connection.transaction().expect("begin");
-        let seeded = stamp(5, "a3f2");
+        let seeded = stamp(5, "a3f2a3f2");
         let ids = if reversed { [two, one] } else { [one, two] };
         let mut parent = node(NODE_ID, &seeded, "Parent");
         parent.children = ids.iter().map(|id| node(id, &seeded, "Child")).collect();
@@ -2207,12 +2211,12 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
         )
         .expect("seed");
 
-        let mut gone = node(NODE_ID, &stamp(9, "a3f2"), "Parent");
+        let mut gone = node(NODE_ID, &stamp(9, "a3f2a3f2"), "Parent");
         gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
         merge_document(
             &transaction,
             &clock(),
-            &trash(vec![gone], &stamp(9, "a3f2")),
+            &trash(vec![gone], &stamp(9, "a3f2a3f2")),
             &trash_input(),
             None,
         )
@@ -2233,7 +2237,7 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
 
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
+    let seeded = stamp(5, "a3f2a3f2");
     let mut parent = node(NODE_ID, &seeded, "Parent");
     parent.children = [one, two]
         .iter()
@@ -2247,12 +2251,12 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
         None,
     )
     .expect("seed");
-    let mut gone = node(NODE_ID, &stamp(9, "a3f2"), "Parent");
+    let mut gone = node(NODE_ID, &stamp(9, "a3f2a3f2"), "Parent");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     merge_document(
         &transaction,
         &clock(),
-        &trash(vec![gone], &stamp(9, "a3f2")),
+        &trash(vec![gone], &stamp(9, "a3f2a3f2")),
         &trash_input(),
         None,
     )
@@ -2366,7 +2370,7 @@ fn a_new_page_lands_after_the_pages_already_there() {
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2a3f2"))),
         &input(),
         None,
     )
@@ -2397,7 +2401,7 @@ fn a_new_page_lands_after_the_pages_already_there() {
 fn a_drift_echo_still_asks_for_the_file_to_be_rewritten() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2a3f2")
         .expect("far")
         .encode();
     let file = notes_sync::document::VaultFile::Page(page(
@@ -2429,14 +2433,14 @@ fn a_drift_echo_still_asks_for_the_file_to_be_rewritten() {
 fn a_loser_with_a_newline_is_still_json() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mut multiline = node(NODE_ID, &stamp(5, "a3f2"), "first line\nsecond line");
+    let mut multiline = node(NODE_ID, &stamp(5, "a3f2a3f2"), "first line\nsecond line");
     // A tab, and a control character with no name of its own — the second is
     // what the escape range has to catch.
     multiline.note = "a\tnote\u{1}here".to_owned();
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(vec![multiline], &stamp(5, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(vec![multiline], &stamp(5, "a3f2a3f2"))),
         &input(),
         None,
     )
@@ -2453,8 +2457,8 @@ fn a_loser_with_a_newline_is_still_json() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(9, "a3f2"), "theirs")],
-            &stamp(9, "a3f2"),
+            vec![node(NODE_ID, &stamp(9, "a3f2a3f2"), "theirs")],
+            &stamp(9, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -2491,7 +2495,7 @@ fn a_loser_with_a_newline_is_still_json() {
 fn a_same_stamp_defeat_is_labelled_as_one() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let theirs = stamp(5, "a3f2");
+    let theirs = stamp(5, "a3f2a3f2");
     merge_document(
         &transaction,
         &clock(),
@@ -2608,7 +2612,7 @@ fn starred_flag(connection: &Connection, id: &str) -> i64 {
 fn a_split_line_grants_existence_and_position_only() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mark = stamp(5, "a3f2");
+    let mark = stamp(5, "a3f2a3f2");
 
     merge_document(
         &transaction,
@@ -2651,7 +2655,7 @@ fn a_split_line_grants_existence_and_position_only() {
 /// agree about the same node.
 #[test]
 fn a_child_document_converges_in_either_arrival_order() {
-    let mark = stamp(5, "a3f2");
+    let mark = stamp(5, "a3f2a3f2");
     let mut states = Vec::new();
 
     for child_first in [false, true] {
@@ -2705,7 +2709,7 @@ fn a_child_document_converges_in_either_arrival_order() {
 fn replaying_a_split_pair_changes_nothing() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mark = stamp(5, "a3f2");
+    let mark = stamp(5, "a3f2a3f2");
     let parent_file = notes_sync::document::VaultFile::Page(page(
         vec![split_line(
             CHILD_ID,
@@ -2739,7 +2743,7 @@ fn equal_claim_stamps_break_place_ties_by_digest() {
     let first = "Nd0000000001";
     let second = "Nd0000000002";
     let third = "Nd0000000003";
-    let base = stamp(5, "a3f2");
+    let base = stamp(5, "a3f2a3f2");
     let mut orders = Vec::new();
 
     for reversed in [false, true] {
@@ -2785,7 +2789,7 @@ fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
     let one = "Nd0000000001";
     let two = "Nd0000000002";
     let three = "Nd0000000003";
-    let base = stamp(5, "a3f2");
+    let base = stamp(5, "a3f2a3f2");
     let mut orders = Vec::new();
 
     for reversed in [false, true] {
@@ -2795,7 +2799,7 @@ fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
         // One device moved `two` to the front. A move rewrites three claims:
         // the node itself, whoever it now follows, and whoever it stopped
         // following.
-        let moved_at = stamp(9, "aaa1");
+        let moved_at = stamp(9, "aaa1aaa1");
         let mut two_first = node(two, &moved_at, "node 1");
         two_first.place = Some((String::new(), moved_at.clone()));
         let mut one_after_two = node(one, &base, "node 0");
@@ -2809,7 +2813,7 @@ fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
 
         // The other device only restamped `one` where it already was, so its
         // file still carries the claims the document was created with.
-        let mut one_first = node(one, &stamp(7, "bbb2"), "node 0");
+        let mut one_first = node(one, &stamp(7, "bbb2bbb2"), "node 0");
         one_first.place = Some((String::new(), base.clone()));
         let mut two_after_one = node(two, &base, "node 1");
         two_after_one.place = Some((one.to_owned(), base.clone()));
@@ -2817,7 +2821,7 @@ fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
         three_after_two.place = Some((two.to_owned(), base.clone()));
         let edited = notes_sync::document::VaultFile::Page(page(
             vec![one_first, two_after_one, three_after_two],
-            &stamp(7, "bbb2"),
+            &stamp(7, "bbb2bbb2"),
         ));
 
         let (first, second) = if reversed {
@@ -2853,7 +2857,7 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2a3f2"))),
         &input(),
         None,
     )
@@ -2874,22 +2878,22 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
         vec![
             split_line(
                 other,
-                &stamp(1, "a3f2"),
+                &stamp(1, "a3f2a3f2"),
                 "Second",
                 "Second-Mnutes000001/README.md",
             ),
             split_line(
                 PAGE_ID,
-                &stamp(1, "a3f2"),
+                &stamp(1, "a3f2a3f2"),
                 "Projects",
                 "Projects-PrJects00001/README.md",
             ),
         ],
-        &stamp(1, "a3f2"),
+        &stamp(1, "a3f2a3f2"),
     );
     home.id = DocumentId::Home;
     home.root.title = "Home".to_owned();
-    home.root.hlc = stamp(1, "a3f2");
+    home.root.hlc = stamp(1, "a3f2a3f2");
     let mut at_root = input();
     at_root.file_path = "README.md".to_owned();
     merge_document(
@@ -3097,8 +3101,8 @@ fn a_file_whose_footer_was_lost_still_asks_to_be_rewritten() {
     let transaction = connection.transaction().expect("begin");
     let whole = notes_sync::render::render(
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Thought")],
+            &stamp(5, "a3f2a3f2"),
         )),
         notes_sync::render::device_offset(),
     )
@@ -3157,7 +3161,7 @@ fn a_file_whose_footer_was_lost_still_asks_to_be_rewritten() {
 fn a_pictures_unknown_tokens_reach_the_row_in_the_order_the_file_wrote_them() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let mut shot = node(NODE_ID, &stamp(5, "a3f2"), "");
+    let mut shot = node(NODE_ID, &stamp(5, "a3f2a3f2"), "");
     shot.body = notes_sync::document::NodeBody::Image(notes_sync::document::ImageReference {
         original_name: "shot.png".to_owned(),
         path: "assets/shot-9f3a1c8e2044.png".to_owned(),
@@ -3178,7 +3182,7 @@ fn a_pictures_unknown_tokens_reach_the_row_in_the_order_the_file_wrote_them() {
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(vec![shot], &stamp(5, "a3f2"))),
+        &notes_sync::document::VaultFile::Page(page(vec![shot], &stamp(5, "a3f2a3f2"))),
         &input(),
         None,
     )
@@ -3207,12 +3211,12 @@ fn a_merge_learns_the_writing_devices_name() {
     let mut connection = database();
     let named = |name: &str| PageDocument {
         writer: Some(notes_sync::document::Writer {
-            device_id: "a3f2".to_owned(),
+            device_id: "a3f2a3f2".to_owned(),
             device_name: name.to_owned(),
         }),
         ..page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Ship it")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Ship it")],
+            &stamp(5, "a3f2a3f2"),
         )
     };
 
@@ -3227,7 +3231,7 @@ fn a_merge_learns_the_writing_devices_name() {
     .expect("merge");
     assert_eq!(
         device_names(&transaction),
-        vec![("a3f2".to_owned(), "Studio".to_owned())]
+        vec![("a3f2a3f2".to_owned(), "Studio".to_owned())]
     );
 
     // A rename reaches every other device the same way every other fact does:
@@ -3243,7 +3247,7 @@ fn a_merge_learns_the_writing_devices_name() {
     .expect("merge");
     assert_eq!(
         device_names(&transaction),
-        vec![("a3f2".to_owned(), "Studio 2".to_owned())]
+        vec![("a3f2a3f2".to_owned(), "Studio 2".to_owned())]
     );
 }
 
@@ -3256,7 +3260,7 @@ fn a_file_that_names_nobody_leaves_the_names_alone() {
     let transaction = connection.transaction().expect("begin");
     transaction
         .execute(
-            "INSERT INTO sync_devices(device_id, name) VALUES ('a3f2', 'Studio')",
+            "INSERT INTO sync_devices(device_id, name) VALUES ('a3f2a3f2', 'Studio')",
             [],
         )
         .expect("seed");
@@ -3265,8 +3269,8 @@ fn a_file_that_names_nobody_leaves_the_names_alone() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Ship it")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Ship it")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -3275,7 +3279,7 @@ fn a_file_that_names_nobody_leaves_the_names_alone() {
 
     assert_eq!(
         device_names(&transaction),
-        vec![("a3f2".to_owned(), "Studio".to_owned())]
+        vec![("a3f2a3f2".to_owned(), "Studio".to_owned())]
     );
 }
 
@@ -3290,8 +3294,8 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(NODE_ID, &stamp(5, "a3f2"), "Next sprint")],
-            &stamp(5, "a3f2"),
+            vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Next sprint")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -3300,7 +3304,7 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
 
     // A stamp from a broken clock: the file is written, and the row it replaced
     // is the loss worth keeping.
-    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2a3f2")
         .expect("far")
         .encode();
     merge_document(
@@ -3324,8 +3328,8 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(other, &stamp(9, "a3f2"), "Mine")],
-            &stamp(9, "a3f2"),
+            vec![node(other, &stamp(9, "a3f2a3f2"), "Mine")],
+            &stamp(9, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -3335,8 +3339,8 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Page(page(
-            vec![node(other, &stamp(5, "a3f2"), "Theirs, older")],
-            &stamp(5, "a3f2"),
+            vec![node(other, &stamp(5, "a3f2a3f2"), "Theirs, older")],
+            &stamp(5, "a3f2a3f2"),
         )),
         &input(),
         None,
@@ -3372,8 +3376,8 @@ fn a_file_cannot_rename_this_device() {
                 device_name: "Somebody else's laptop".to_owned(),
             }),
             ..page(
-                vec![node(NODE_ID, &stamp(5, "a3f2"), "Ship it")],
-                &stamp(5, "a3f2"),
+                vec![node(NODE_ID, &stamp(5, "a3f2a3f2"), "Ship it")],
+                &stamp(5, "a3f2a3f2"),
             )
         }),
         &input(),

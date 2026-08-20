@@ -88,7 +88,7 @@ fn build(database: &Path) {
     SqliteStorage::open(database).expect("create the schema and the root row");
     let connection = Connection::open(database).expect("fixture connection");
     // The stamping triggers call `yona_hlc()`, registered per connection.
-    let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+    let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0dec0de").expect("clock"));
     notes_sync::hlc::register(&connection, clock).expect("register");
     for (id, parent_id, sort_key, deleted) in ROWS {
         connection
