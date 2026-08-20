@@ -218,7 +218,7 @@ export function OutlinePageHeading({
   readonly visibleIndex: OutlineIndex;
   readonly onBack: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
-  readonly onDateClick: (date: string, anchor: DOMRect) => void;
+  readonly onDateClick?: (date: string, anchor: DOMRect) => void;
   readonly imageDropTarget: boolean;
   readonly onPickImage: () => void;
 }) {

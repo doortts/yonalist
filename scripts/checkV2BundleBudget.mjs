@@ -91,8 +91,25 @@ for (const file of files) {
 // gzip headroom, so raw still binds first — and still well below the 8th largest
 // lazy chunk (webview, 3,361 bytes), so eagerly importing any of the big eight
 // trips the gate the way it did before.
-const rawLimit = 350 * 1024;
-const gzipLimit = 107 * 1024;
+// Measured 2026-08-21 at the journal feature: the entry pair is 365,432 raw /
+// 110,454 gzip, against 357,478 raw / 108,254 gzip for the same tree without it
+// (main at 07d265f6's merge base, built the same way). So the day pages, the
+// feed, the calendar, the linked references, the carry-over and the date-token
+// menu cost 7,954 raw eager bytes between them.
+// Five of those six surfaces are lazy chunks and none of them is in this pair
+// (JournalFeed 3,360; JournalCalendar, JournalDayBar, JournalReferences and
+// JournalDateMenu smaller still). What stays eager is what has to be on screen
+// or in the hands of the first keystroke: the sidebar's Journals rows and the
+// Suspense that holds the month's place, the date-token handler threaded down
+// to the row and note fields, and the date helpers that decide whether a page
+// is a day at all -- the outline's own token parser reads the last of those, so
+// it cannot wait for a chunk either.
+// Headroom: 1,160 raw -- about 350 gzip at these chunks' ratio, inside the
+// 1,162 gzip headroom, so raw still binds first -- and still below the 8th
+// largest lazy chunk (webview, 3,361 bytes), so eagerly importing any of the
+// big eight trips the gate the way it has since 2026-08-16.
+const rawLimit = 358 * 1024;
+const gzipLimit = 109 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +

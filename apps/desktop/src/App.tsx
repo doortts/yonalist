@@ -40,11 +40,7 @@ import {
   type PaneFocusSnapshot
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
-import { JournalFeed } from "./JournalFeed";
-import { JournalCalendar } from "./JournalCalendar";
-import {
-  JournalDateMenu, type JournalDateMenuTarget
-} from "./JournalDateMenu";
+import type { JournalDateMenuTarget } from "./JournalDateMenu";
 import { ROOT_ID } from "./store/storeSupport";
 import { journalDateOf, journalDays } from "./journal";
 import { localDateIso } from "./outline/outlineSlash";
@@ -52,6 +48,17 @@ import type { OutlineTagToken } from "./outline/OutlineTextField";
 import { ShortcutHint, useShortcutHints } from "./shortcutHints";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));
+// Neither is on screen when the window opens: the feed waits for the Journals
+// row and the menu for a date somebody presses, so their bytes wait too.
+const JournalFeed = lazy(() => import("./JournalFeed").then((module) =>
+  ({ default: module.JournalFeed })));
+const JournalDateMenu = lazy(() => import("./JournalDateMenu").then((module) =>
+  ({ default: module.JournalDateMenu })));
+// The month is on screen from the start, so it is the one journal surface that
+// costs a fallback: the sidebar keeps its height while the chunk lands, and
+// what arrives is a grid nobody is typing into.
+const JournalCalendar = lazy(() => import("./JournalCalendar").then((module) =>
+  ({ default: module.JournalCalendar })));
 // Settings pulls in @base-ui/react, which costs ~12KB gzip of first paint the
 // outline never needs. It stays out of the entry chunk like the row menus do.
 const SettingsView = lazy(() => import("./SettingsView").then((module) =>
@@ -350,7 +357,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       focus: location.secondaryFocus
     });
   }, [store]);
-  applyNavigationRef.current = applyNavigation;
+  // History drives this one, and a step it replays can land on any page: the
+  // feed is a place, not a property of the page, so being sent somewhere by
+  // Undo leaves it. The direct callers below clear the flag themselves, which
+  // is what lets `openJournals` set it after calling one of them.
+  applyNavigationRef.current = (location) => {
+    setFeedOpen(false);
+    return applyNavigation(location);
+  };
   const recordNavigation = useCallback((
     before: AppNavigationLocation,
     after: AppNavigationLocation
@@ -539,6 +553,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     setDateMenu(null);
     setLibraryView("all");
     setQuery("");
+    // The day already open is not a move, and recording one would put a step on
+    // the undo stack that takes the caret away and puts nothing back.
+    const snapshot = store.getSnapshot();
+    const open = snapshot.pages.find(
+      (page) => page.id === snapshot.activePageId
+    );
+    if (open && journalDateOf(open.title) === date) return;
     const before = captureNavigation();
     afterDraftFlush(() => {
       void store.openJournal(date).then(async (pageId) => {
@@ -563,6 +584,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const openTodayToWrite = useCallback(() => {
     setSettingsOpen(false);
     setFeedOpen(false);
+    setDateMenu(null);
     setLibraryView("all");
     setQuery("");
     const before = captureNavigation();
@@ -600,6 +622,35 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     captureNavigation,
     recordMutationNavigation,
     recordNavigation,
+    store
+  ]);
+  /**
+   * Rows carried forward from earlier days. The bar works out which rows those
+   * are; moving them belongs here, like every other structural write in the
+   * shell, so that Undo has a view to put back as well as a command to take
+   * back.
+   */
+  const carryRowsInto = useCallback((
+    pageId: string,
+    rowIds: readonly string[]
+  ) => {
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      void store.moveNodes(rowIds.map((id) => ({
+        id,
+        parentId: pageId,
+        beforeId: null
+      }))).then(async () => {
+        const after = emptyPaneLocation(pageId);
+        await applyNavigation(after);
+        recordMutationNavigation(before, after);
+      });
+    });
+  }, [
+    afterDraftFlush,
+    applyNavigation,
+    captureNavigation,
+    recordMutationNavigation,
     store
   ]);
   /**
@@ -995,11 +1046,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                   </button>
                 </div>
               </div>
-              <JournalCalendar
-                days={allJournalDays}
-                today={localDateIso()}
-                onOpenDay={openJournalDay}
-              />
+              <Suspense
+                fallback={<div className="notes-journal-calendar-placeholder" />}
+              >
+                <JournalCalendar
+                  days={allJournalDays}
+                  today={localDateIso()}
+                  openDate={openJournalDate}
+                  onOpenDay={openJournalDay}
+                />
+              </Suspense>
             </section>
             <section
               className="notes-navigation-section notes-navigation-pages"
@@ -1145,7 +1201,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           />
         </Suspense>
       ) : feedOpen ? (
-        <JournalFeed
+        <Suspense fallback={<p className="notes-pane-state">Loading...</p>}>
+          <JournalFeed
           store={store}
           status={state.status}
           error={state.error}
@@ -1160,8 +1217,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onDateClick={handleDateClick}
           onOpenPage={(pageId) => void openPage(pageId)}
           onOpenDay={openJournalDay}
+          onCarryRows={carryRowsInto}
           onSelectionCountChange={reportSelectionCount}
-        />
+          />
+        </Suspense>
       ) : (
         <NotesDetailPanes
           store={store}
@@ -1183,16 +1242,19 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onDateClick={handleDateClick}
           onOpenPage={(pageId) => void openPage(pageId)}
           onOpenDay={openJournalDay}
+          onCarryRows={carryRowsInto}
           onSelectionCountChange={reportSelectionCount}
         />
       )}
       {dateMenu && !settingsOpen && (
-        <JournalDateMenu
-          target={dateMenu}
-          onOpenDay={openJournalDay}
-          onShowLinkedRows={showLinkedRows}
-          onClose={() => setDateMenu(null)}
-        />
+        <Suspense fallback={null}>
+          <JournalDateMenu
+            target={dateMenu}
+            onOpenDay={openJournalDay}
+            onShowLinkedRows={showLinkedRows}
+            onClose={() => setDateMenu(null)}
+          />
+        </Suspense>
       )}
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">

@@ -23,12 +23,14 @@ export function JournalDayBar({
   store,
   pageId,
   date,
-  onOpenDay
+  onOpenDay,
+  onCarryRows
 }: {
   readonly store: NotesStore;
   readonly pageId: string;
   readonly date: string;
   readonly onOpenDay: (date: string) => void;
+  readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
 }) {
   const carried = useCarryOverRows(store, date, pageId);
   const previous = shiftDay(date, -1);
@@ -41,11 +43,9 @@ export function JournalDayBar({
         <button
           className="notes-journal-carry"
           type="button"
-          onClick={() => void store.moveNodes(carried.map((node) => ({
-            id: node.id,
-            parentId: pageId,
-            beforeId: null
-          })))}
+          onClick={() => onCarryRows(
+            pageId, carried.map((node) => node.id)
+          )}
         >
           <ArrowDownToLine size={13} aria-hidden="true" />
           <span>{`Carry over ${carried.length}`}</span>
@@ -76,9 +76,14 @@ export function JournalDayBar({
 /**
  * The unfinished To-dos waiting on the days before this one. Read here rather
  * than counted from what is on screen: those days are not open, and the count
- * is the whole of what the button can honestly say before it is pressed. It is
- * read again on every revision, so the row that was just carried leaves the
- * count it came from.
+ * is the whole of what the button can honestly say before it is pressed.
+ *
+ * Read when the days to read change, and not on every revision: a keystroke on
+ * the open day cannot change what an earlier day is still carrying, and reading
+ * seven days again for each one would put an IPC round trip inside the typing
+ * debounce. The days change as soon as a carry-over lands -- the rows move onto
+ * this page, so the page list and its journals are read again -- which is what
+ * empties the count that was just acted on.
  */
 function useCarryOverRows(
   store: NotesStore,
@@ -95,7 +100,6 @@ function useCarryOverRows(
     .filter((day) => day.id !== pageId)
     .map((day) => day.id)
     .join(" ");
-  const revision = shell.revision;
   useEffect(() => {
     if (dayIds.length === 0) {
       setRows([]);
@@ -116,6 +120,6 @@ function useCarryOverRows(
     return () => {
       active = false;
     };
-  }, [dayIds, revision, store]);
+  }, [dayIds, store]);
   return rows;
 }

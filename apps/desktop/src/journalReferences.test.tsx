@@ -95,6 +95,8 @@ describe("the rows that name a day", () => {
     expect(api.search).toHaveBeenCalledWith(
       expect.objectContaining({ text: `date:${DAY}` })
     );
+    // The section draws before its search answers, so the rows are waited for.
+    await within(references).findByText("Sprint plan");
     const rows = within(references).getAllByRole("button");
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("Sprint plan");
@@ -107,7 +109,7 @@ describe("the rows that name a day", () => {
       "region", { name: "Linked references" }
     );
 
-    fireEvent.click(within(references).getAllByRole("button")[0]);
+    fireEvent.click((await within(references).findAllByRole("button"))[0]);
 
     expect(await screen.findByDisplayValue("Sprint plan")).toBeTruthy();
   });

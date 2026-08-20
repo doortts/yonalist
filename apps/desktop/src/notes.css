@@ -4246,6 +4246,11 @@ body.is-outline-dragging * {
   font-size: 12.5px;
 }
 
+.notes-journal-day-bar-weekday {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
 .notes-journal-day-bar-spacer {
   flex: 1;
 }
@@ -4292,6 +4297,12 @@ body.is-outline-dragging * {
 
 /* The month under the Journals rows. Days that have been written in carry a
    quiet fill rather than a dot: at this size a dot is a smudge. */
+/* What stands in the calendar's place while its chunk lands: the same height,
+   so the rows under it do not jump when the month arrives. */
+.notes-journal-calendar-placeholder {
+  height: 194px;
+}
+
 .notes-journal-calendar {
   display: flex;
   flex-direction: column;
@@ -4366,6 +4377,12 @@ body.is-outline-dragging * {
   background: var(--bg-active);
   color: var(--text-1);
   font-weight: 600;
+}
+
+/* The day the reader is standing on, which is not always today. */
+.notes-journal-calendar-day[data-open="true"] {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--text-1);
 }
 
 .notes-journal-calendar-day[aria-current="date"] {

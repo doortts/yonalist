@@ -82,7 +82,7 @@ export interface OutlineRowRuntimeState {
   ) => void;
   readonly onWidenSelection: (fromNodeId: string) => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
-  readonly onDateClick: (date: string, anchor: DOMRect) => void;
+  readonly onDateClick?: (date: string, anchor: DOMRect) => void;
   readonly onPickImage: (nodeId: string) => void;
   /** Clipboard for an image row with nothing selected around it. */
   readonly onCopyImage: (nodeId: string) => void;
@@ -403,8 +403,8 @@ export const OutlineRow = memo(function OutlineRow({
             value={draft ?? node.text}
             aria-expanded={slashMenu ? true : undefined}
             onTagClick={(token) => runtime.state.onTagClick(token)}
-            onDateClick={(date, anchor) =>
-              runtime.state.onDateClick(date, anchor)}
+            onDateClick={runtime.state.onDateClick &&
+              ((date, anchor) => runtime.state.onDateClick?.(date, anchor))}
             // No `isComposing` guard on this path: a composed character stands at
             // the caret, so the caret is never at a box end while a composition
             // is open, and a row that already carried a box is refused anyway.
@@ -527,8 +527,8 @@ export const OutlineRow = memo(function OutlineRow({
               };
             }}
             onTagClick={(token) => runtime.state.onTagClick(token)}
-            onDateClick={(date, anchor) =>
-              runtime.state.onDateClick(date, anchor)}
+            onDateClick={runtime.state.onDateClick &&
+              ((date, anchor) => runtime.state.onDateClick?.(date, anchor))}
             onAutoHide={() => setNoteOpen(false)}
           />
         )}

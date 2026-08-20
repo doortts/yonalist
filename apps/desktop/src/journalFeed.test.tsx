@@ -1,4 +1,6 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent, render, screen, waitFor, within
+} from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
@@ -126,6 +128,28 @@ describe("the Journals feed", () => {
     expect(within(earlier).getAllByRole("heading")).toHaveLength(9);
     expect(within(earlier)
       .queryByRole("button", { name: "Show earlier days" })).toBeNull();
+  });
+
+  it("is left behind when Undo sends the reader back", async () => {
+    const api = feedApi(2);
+    api.undo = vi.fn().mockResolvedValue({
+      revision: 4,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: false, canRedo: true, undoDepth: 0, redoDepth: 1 }
+    });
+    render(<App api={api} />);
+    await screen.findByDisplayValue("Reading list");
+    openFeed();
+    await screen.findByRole("region", { name: "Earlier days" });
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+
+    // The step being replayed put the reader on a page, and the feed is a
+    // place rather than something a page carries.
+    await waitFor(() => expect(
+      screen.queryByRole("region", { name: "Earlier days" })
+    ).toBeNull());
   });
 
   it("opens a day of its own when its heading is pressed", async () => {

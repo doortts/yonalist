@@ -67,7 +67,9 @@ export function NotesOutline({
   readonly onHome: () => void;
   readonly onOpenSplit?: (nodeId: string) => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
-  readonly onDateClick: (date: string, anchor: DOMRect) => void;
+  /** Optional like `onOpenSplit`: a pane with nowhere to navigate to leaves
+   * the dates as the pills they were. */
+  readonly onDateClick?: (date: string, anchor: DOMRect) => void;
   readonly onClose?: () => void;
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;

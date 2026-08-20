@@ -24,13 +24,24 @@ function weekdayInitials(): readonly string[] {
 export function JournalCalendar({
   days,
   today,
+  openDate,
   onOpenDay
 }: {
   readonly days: readonly JournalDay[];
   readonly today: string;
+  /** The day the reader is on, if they are on one. */
+  readonly openDate: string | null;
   readonly onOpenDay: (date: string) => void;
 }) {
-  const [month, setMonth] = useState(() => monthOf(today));
+  const [month, setMonth] = useState(() => monthOf(openDate ?? today));
+  // Walking to another month leaves the reader browsing, so the month stays
+  // where they put it -- until they open a day outside it, which is a move the
+  // calendar has to follow or it goes on showing somewhere they no longer are.
+  const [followed, setFollowed] = useState(openDate);
+  if (openDate !== followed) {
+    setFollowed(openDate);
+    if (openDate && monthOf(openDate) !== month) setMonth(monthOf(openDate));
+  }
   const written = useMemo(
     () => new Set(days.map((day) => day.date)),
     [days]
@@ -84,6 +95,7 @@ export function JournalCalendar({
               aria-label={date}
               aria-current={date === today ? "date" : undefined}
               data-journal={written.has(date) ? "true" : undefined}
+              data-open={date === openDate ? "true" : undefined}
               onClick={() => onOpenDay(date)}
             >
               {Number(date.slice(8))}

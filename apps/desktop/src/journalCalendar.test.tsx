@@ -63,8 +63,11 @@ function calendarApi(): NotesApi {
   return api;
 }
 
-function calendar() {
-  return within(screen.getByRole("group", { name: "Journal calendar" }));
+/** The month arrives in its own chunk, so every reader of it waits for one. */
+async function calendar() {
+  return within(await screen.findByRole(
+    "group", { name: "Journal calendar" }
+  ));
 }
 
 describe("the journal calendar", () => {
@@ -72,13 +75,13 @@ describe("the journal calendar", () => {
     render(<App api={calendarApi()} />);
     await screen.findByDisplayValue("Reading list");
 
-    expect(calendar().getByRole("button", { name: TODAY }))
+    expect((await calendar()).getByRole("button", { name: TODAY }))
       .toHaveAttribute("aria-current", "date");
-    expect(calendar().getByRole("button", { name: WRITTEN }))
+    expect((await calendar()).getByRole("button", { name: WRITTEN }))
       .toHaveAttribute("data-journal", "true");
     const plainDay = monthGrid(monthOf(TODAY))
       .find((day) => day !== null && day !== TODAY && day !== WRITTEN) as string;
-    expect(calendar().getByRole("button", { name: plainDay }))
+    expect((await calendar()).getByRole("button", { name: plainDay }))
       .not.toHaveAttribute("data-journal");
   });
 
@@ -86,7 +89,7 @@ describe("the journal calendar", () => {
     render(<App api={calendarApi()} />);
     await screen.findByDisplayValue("Reading list");
 
-    fireEvent.click(calendar().getByRole("button", { name: WRITTEN }));
+    fireEvent.click((await calendar()).getByRole("button", { name: WRITTEN }));
 
     expect(await screen.findByDisplayValue(WRITTEN)).toBeTruthy();
   });
@@ -97,12 +100,12 @@ describe("the journal calendar", () => {
     const previousMonth = shiftMonth(monthOf(TODAY), -1);
     const someDay = monthGrid(previousMonth).filter(Boolean).at(-1) as string;
 
-    fireEvent.click(calendar().getByRole("button", { name: "Previous month" }));
+    fireEvent.click((await calendar()).getByRole("button", { name: "Previous month" }));
 
-    expect(calendar().getByRole("button", { name: someDay })).toBeTruthy();
+    expect((await calendar()).getByRole("button", { name: someDay })).toBeTruthy();
 
-    fireEvent.click(calendar().getByRole("button", { name: "Next month" }));
+    fireEvent.click((await calendar()).getByRole("button", { name: "Next month" }));
 
-    expect(calendar().getByRole("button", { name: TODAY })).toBeTruthy();
+    expect((await calendar()).getByRole("button", { name: TODAY })).toBeTruthy();
   });
 });

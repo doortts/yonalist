@@ -40,6 +40,19 @@ describe("carryOverDays", () => {
     ]);
   });
 
+  it("is a window in days, not the seven most recent journals", () => {
+    // Somebody who writes once a month has seven journals behind them, and
+    // none of them is unfinished work any more.
+    const sparse = [
+      { id: "january", date: "2026-01-05" },
+      { id: "february", date: "2026-02-05" },
+      { id: "yesterday", date: "2026-08-20" }
+    ];
+
+    expect(carryOverDays(sparse, "2026-08-21").map((day) => day.id))
+      .toEqual(["yesterday"]);
+  });
+
   it("leaves out the day itself and the days after it", () => {
     expect(carryOverDays(days, "2026-08-01")).toEqual([]);
   });

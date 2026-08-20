@@ -3,6 +3,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import { NotesOutline, type PaneRestoreRequest } from "./NotesOutline";
 import { JournalReferences } from "./JournalReferences";
+import { JournalDayBar } from "./JournalDayBar";
 import { useJournalDate } from "./useJournalDate";
 import type { JournalDay } from "./journal";
 import { weekdayOf } from "./journal";
@@ -189,6 +190,7 @@ export function JournalFeed({
   onDateClick,
   onOpenPage,
   onOpenDay,
+  onCarryRows,
   onSelectionCountChange
 }: {
   readonly store: NotesStore;
@@ -205,6 +207,7 @@ export function JournalFeed({
   readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly onOpenPage: (pageId: string) => void;
   readonly onOpenDay: (date: string) => void;
+  readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
     count: number
@@ -219,6 +222,15 @@ export function JournalFeed({
           className="notes-detail-pane"
           data-journal={journalDate ? "true" : undefined}
         >
+          {page && journalDate && (
+            <JournalDayBar
+              store={store}
+              pageId={page.id}
+              date={journalDate}
+              onOpenDay={onOpenDay}
+              onCarryRows={onCarryRows}
+            />
+          )}
           <NotesOutline
             store={store}
             status={status}

@@ -1,24 +1,25 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { JournalDay } from "./journal";
+import { shiftDay } from "./journal";
 
 /** How far back a carry-over looks for work nobody finished. */
 export const CARRY_OVER_DAYS = 7;
 
 /**
- * The days a carry-over reads: the seven before this one that have a page,
- * oldest first, so what is carried lands in the order it was written. Further
- * back than that is not unfinished work any more -- it is a decision somebody
- * already made by leaving it there.
+ * The days a carry-over reads: the seven calendar days before this one, oldest
+ * first, so what is carried lands in the order it was written. A window in
+ * days, not the seven most recent journals -- somebody who writes once a month
+ * would otherwise be offered To-dos from half a year ago, which is not
+ * unfinished work any more but a decision they already made by leaving it.
  */
 export function carryOverDays(
   days: readonly JournalDay[],
   date: string
 ): readonly JournalDay[] {
+  const earliest = shiftDay(date, -CARRY_OVER_DAYS);
   return days
-    .filter((day) => day.date < date)
-    .sort((left, right) => right.date.localeCompare(left.date))
-    .slice(0, CARRY_OVER_DAYS)
-    .reverse();
+    .filter((day) => day.date < date && day.date >= earliest)
+    .sort((left, right) => left.date.localeCompare(right.date));
 }
 
 function unfinished(node: NoteView | undefined): boolean {

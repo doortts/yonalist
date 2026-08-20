@@ -42,7 +42,7 @@ export function SupportingNoteField({
   readonly containerClassName: string;
   readonly targets: () => SupportingNoteTargets;
   readonly onTagClick: (token: OutlineTagToken) => void;
-  readonly onDateClick: (date: string, anchor: DOMRect) => void;
+  readonly onDateClick?: (date: string, anchor: DOMRect) => void;
   readonly onAutoHide: () => void;
   readonly ref?: Ref<HTMLTextAreaElement>;
 }) {

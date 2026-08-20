@@ -800,10 +800,47 @@ fn a_date_search_takes_a_range_as_well_as_a_day() {
         vec!["july".to_owned(), "august".to_owned()]
     );
     assert!(hits("date:2026-09-01..2026-09-30").is_empty());
-    // Both ends are dates or it is not a range: the whole string falls through
-    // to the text search, which finds nothing written like that.
+    // Written back to front, and read as the range it plainly means.
+    assert_eq!(hits("date:2026-07-31..2026-07-01"), vec!["july".to_owned()]);
+    // Both ends have to be dates. A half-written range is not one, and falls
+    // through to the single-day filter -- which no row's date matches, since
+    // no date_key carries a `..`.
     assert!(hits("date:2026-07-01..").is_empty());
     assert!(hits("date:..2026-07-31").is_empty());
+
+    // A filter's own values are bound after the fixed ones, so the page window
+    // has to still be the window: with the limit and the offset transposed this
+    // asks for one row and gets none, or gets both.
+    let first = storage
+        .search(SearchQuery {
+            text: "date:2026-07-01..2026-08-31".into(),
+            cursor: None,
+            limit: 1,
+        })
+        .unwrap();
+    assert_eq!(
+        first
+            .hits
+            .iter()
+            .map(|hit| hit.node.id.clone())
+            .collect::<Vec<_>>(),
+        vec!["july".to_owned()]
+    );
+    let second = storage
+        .search(SearchQuery {
+            text: "date:2026-07-01..2026-08-31".into(),
+            cursor: first.next_cursor,
+            limit: 1,
+        })
+        .unwrap();
+    assert_eq!(
+        second
+            .hits
+            .iter()
+            .map(|hit| hit.node.id.clone())
+            .collect::<Vec<_>>(),
+        vec!["august".to_owned()]
+    );
 }
 
 #[test]

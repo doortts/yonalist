@@ -99,6 +99,27 @@ describe("carrying unfinished work into the open day", () => {
     });
   });
 
+  it("takes one Undo to put the carried rows back", async () => {
+    const api = carryApi([row("todo-open", "journal-0", { marker: "todo" })]);
+    api.undo = vi.fn().mockResolvedValue({
+      revision: 4,
+      changedNodes: [row("todo-open", "journal-0", { marker: "todo" })],
+      deletedIds: [],
+      history: { canUndo: false, canRedo: true, undoDepth: 0, redoDepth: 1 }
+    });
+    render(<App api={api} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Carry over 1" }));
+    await waitFor(() => expect(commands(api)).toHaveLength(1));
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+
+    // One command went out, so one step comes back: the rows are on the day
+    // they were written on again, and the button offers them once more.
+    await waitFor(() => expect(api.undo).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("button", { name: "Carry over 1" }))
+      .toBeTruthy();
+  });
+
   it("has nothing to offer when nothing was left unfinished", async () => {
     const api = carryApi([
       row("todo-done", "journal-0", { marker: "todo", completed: true })

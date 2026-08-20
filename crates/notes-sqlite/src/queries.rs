@@ -321,7 +321,17 @@ pub(crate) fn search(
 /// worse answer than none.
 fn date_range(value: &str) -> Option<(String, String)> {
     let (from, to) = value.split_once("..")?;
-    (valid_date(from) && valid_date(to)).then(|| (from.to_owned(), to.to_owned()))
+    if !valid_date(from) || !valid_date(to) {
+        return None;
+    }
+    // Written back to front is still a range with two ends. Reading it as
+    // written would answer with nothing at all, which reads as "no rows in
+    // those days" rather than "you typed it backwards".
+    Some(if from <= to {
+        (from.to_owned(), to.to_owned())
+    } else {
+        (to.to_owned(), from.to_owned())
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,11 +1,15 @@
-import { memo, type CSSProperties } from "react";
+import { lazy, memo, Suspense, type CSSProperties } from "react";
 import type { NotesStore } from "./notesStore";
 import {
   NotesOutline,
   type PaneRestoreRequest
 } from "./NotesOutline";
-import { JournalReferences } from "./JournalReferences";
-import { JournalDayBar } from "./JournalDayBar";
+// A journal day is one page among many, and most windows open on another: the
+// bar and the references arrive with the first day the reader opens.
+const JournalReferences = lazy(() => import("./JournalReferences").then(
+  (module) => ({ default: module.JournalReferences })));
+const JournalDayBar = lazy(() => import("./JournalDayBar").then(
+  (module) => ({ default: module.JournalDayBar })));
 import { useJournalDate } from "./useJournalDate";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import type { NotesShellSnapshot } from "./store/storeSubscriptions";
@@ -31,6 +35,7 @@ export interface NotesDetailPanesProps {
   readonly onDateClick: (date: string, anchor: DOMRect) => void;
   readonly onOpenPage: (pageId: string) => void;
   readonly onOpenDay: (date: string) => void;
+  readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
     count: number
@@ -57,6 +62,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onDateClick,
   onOpenPage,
   onOpenDay,
+  onCarryRows,
   onSelectionCountChange
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
@@ -85,12 +91,15 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
             style={{ overflowY: splitOpen ? "auto" : undefined }}
           >
             {page && journalDate && (
-              <JournalDayBar
-                store={store}
-                pageId={page.id}
-                date={journalDate}
-                onOpenDay={onOpenDay}
-              />
+              <Suspense fallback={null}>
+                <JournalDayBar
+                  store={store}
+                  pageId={page.id}
+                  date={journalDate}
+                  onOpenDay={onOpenDay}
+                  onCarryRows={onCarryRows}
+                />
+              </Suspense>
             )}
             <NotesOutline
               store={store}
@@ -109,12 +118,14 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
               onSelectionCountChange={onSelectionCountChange}
             />
             {page && journalDate && (
-              <JournalReferences
-                store={store}
-                pageId={page.id}
-                date={journalDate}
-                onOpenPage={onOpenPage}
-              />
+              <Suspense fallback={null}>
+                <JournalReferences
+                  store={store}
+                  pageId={page.id}
+                  date={journalDate}
+                  onOpenPage={onOpenPage}
+                />
+              </Suspense>
             )}
           </div>
           {splitOpen && (
@@ -145,7 +156,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
                   restoreRequest={secondaryRestore}
                   onOpenSplit={onOpenSplit}
                   onTagClick={onTagClick}
-              onDateClick={onDateClick}
+                  onDateClick={onDateClick}
                   onClose={onCloseSplit}
                   onSelectionCountChange={onSelectionCountChange}
                 />
