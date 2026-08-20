@@ -41,3 +41,56 @@ renamed internally -- the name table still reads `Excalifont`.
 Excalifont is licensed under the SIL Open Font License, Version 1.1. The
 subsets carry the copyright in their own name table but not the license text,
 so it ships beside them as `Excalifont-OFL.txt`.
+
+## Xiaolai SC, for Hangul in the handwriting text setting
+
+Retrieved from the Excalidraw repository on 2026-08-21. Excalifont has no
+Hangul glyphs, so Excalidraw loads a second hand-drawn face for CJK, and that
+face -- Xiaolai SC, derived from SetoFont -- is what draws Korean on
+excalidraw.com.
+
+Excalidraw splits Xiaolai into 209 woff2 subsets. The 52 whose declared
+unicode-range reaches Hangul are bundled under
+`apps/desktop/src/assets/xiaolai/` as byte-for-byte copies of
+`https://raw.githubusercontent.com/excalidraw/excalidraw/master/packages/excalidraw/fonts/Xiaolai/<name>`,
+under their upstream names, together with the ranges Excalidraw declares for
+them in `packages/excalidraw/fonts/Xiaolai/index.ts`. Between them they reach
+11,171 of the 11,172 modern Hangul syllables. The remaining 157 subsets carry
+Chinese and Japanese this setting never asks for and are not bundled.
+
+| Item | Value |
+| --- | --- |
+| Bundled subsets | 52 files, 3,202,004 bytes, listed with their SHA-256 in `apps/desktop/src/assets/xiaolai/SHA256SUMS` |
+| License | https://raw.githubusercontent.com/lxgw/kose-font/master/OFL.txt, 4,432 bytes, `0df7e09be4c2c850a48bd8beb9cd64b343aad49cd5d3f6cfb2ad2e3d28a56ca4` |
+
+Xiaolai SC is licensed under the SIL Open Font License, Version 1.1,
+copyright 2020-2024 LXGW and 2014 Nozomi Seto. The subsets carry no license
+text of their own, so it ships beside them as `Xiaolai-OFL.txt`.
+
+## Nanum Pen Script, the second hand the outline can be written in
+
+Retrieved from Google Fonts on 2026-08-21. Xiaolai's Hangul comes down from a
+Japanese face, so the handwriting setting also offers a Korean hand, and that
+one writes the whole outline: picking it puts Nanum Pen Script ahead of
+Excalifont, so its Latin runs too.
+
+Google Fonts serves the family as 93 woff2 chunks, all of them bundled under
+`apps/desktop/src/assets/nanum-pen/` and renamed only from the served hash to
+the chunk index each already carries, except the Latin chunk, which is named
+for what it covers. The chunks and their unicode ranges come from
+`https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&display=swap`, read
+with a browser user agent, and each file is a byte-for-byte copy of the
+`https://fonts.gstatic.com/s/nanumpenscript/v25/...` URL that stylesheet names.
+
+| Item | Value |
+| --- | --- |
+| Bundled chunks | 93 files, 1,311,112 bytes, listed with their SHA-256 in `apps/desktop/src/assets/nanum-pen/SHA256SUMS` |
+| License | https://raw.githubusercontent.com/google/fonts/main/ofl/nanumpenscript/OFL.txt, 4,534 bytes, `eeacf16032901d0ed0456876ec77b8f0fda6b3fecec7d972f8543eb602e6c30f` |
+
+Nanum Pen Script is licensed under the SIL Open Font License, Version 1.1,
+copyright 2010 NHN Corporation, designed by Sandoll Communications. That
+license reserves the Nanum names, which is why the bundled files are Google's
+own builds rather than a conversion of our own, and it ships beside them as
+`NanumPenScript-OFL.txt`. Its text matches `NanumGothic-OFL.txt` except for two
+trailing spaces this repository's copy of that file has lost; the recorded
+hash there is the upstream one, not the file's current hash.

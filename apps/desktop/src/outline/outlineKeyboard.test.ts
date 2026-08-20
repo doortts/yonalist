@@ -286,6 +286,77 @@ describe("v2 outline keyboard intent resolver", () => {
       imageEdge: "after"
     }))).toEqual({ kind: "focus", nodeId: "next", edge: "start" });
   });
+  // Backspace takes what stands behind the caret. Behind the station past the
+  // picture, and behind the caret standing on the picture itself, that is the
+  // picture. From the station before it the picture stands ahead instead, and
+  // the row behind that caret is not this key's to reach for.
+  it("deletes the image on Backspace from behind it, never from ahead", () => {
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Backspace",
+      imageEdge: "after"
+    }))).toEqual({ kind: "trash" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Backspace"
+    }))).toEqual({ kind: "trash" });
+    // A held key takes the one picture, not one per repeat.
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Backspace",
+      imageEdge: "after",
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Backspace",
+      imageEdge: "before"
+    }))).toBeNull();
+    // A band answers the delete keys with itself wherever the caret parks, the
+    // far station included: the key falls through to the one rule that owns it.
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Backspace",
+      imageEdge: "before",
+      hasSelection: true
+    }))).toEqual({ kind: "trash" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Backspace",
+      imageEdge: "before",
+      hasSelection: true,
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+    // A modifier makes it somebody else's key -- ⌘⌫ deletes to the head of a
+    // line, which is no picture leaving -- and the trash chord still reaches the
+    // row rules underneath. Deleting forward is nobody's ask here either: the
+    // picture stands behind this caret, not ahead of it.
+    for (const overrides of [
+      { altKey: true },
+      { ctrlKey: true },
+      { shiftKey: true },
+      { metaKey: true, platform: "mac" as const }
+    ]) {
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key: "Backspace",
+        imageEdge: "after",
+        ...overrides
+      }))).toBeNull();
+    }
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Delete",
+      imageEdge: "after"
+    }))).toBeNull();
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Backspace",
+      imageEdge: "after",
+      ctrlKey: true,
+      shiftKey: true
+    }))).toEqual({ kind: "trash" });
+  });
 
   it("splits the selected title range into one atomic sibling gesture", () => {
     expect(resolveOutlineKey(input())).toEqual({

@@ -19,6 +19,7 @@ import { pickVaultFolder } from "./vaultPicker";
 import type {
   CaretColor,
   DarkTheme,
+  HandwritingFace,
   LightTheme,
   TextFont,
   ThemeMode
@@ -50,6 +51,15 @@ const textFontOptions: Array<{ value: TextFont; label: string }> = [
   { value: "hand", label: "Handwriting" }
 ];
 
+/*
+ * Excalidraw writes in two faces at once -- Excalifont for Latin, Xiaolai for
+ * Hangul, which is what excalidraw.com shows. Nanum Pen Script draws both.
+ */
+const handwritingFaceOptions: Array<{ value: HandwritingFace; label: string }> = [
+  { value: "excalidraw", label: "Excalidraw" },
+  { value: "nanum", label: "Nanum Pen" }
+];
+
 const markerShapeOptions: Array<{ value: OutlineMarkerShape; label: string }> = [
   { value: "dot", label: "Dot" },
   { value: "square", label: "Square" },
@@ -78,12 +88,14 @@ export function SettingsView({
   darkTheme,
   caretColor,
   textFont,
+  handwritingFace,
   markerStyles,
   onThemeModeChange,
   onLightThemeChange,
   onDarkThemeChange,
   onCaretColorChange,
   onTextFontChange,
+  onHandwritingFaceChange,
   onMarkerStylesChange,
   onClose,
   unusedAssets,
@@ -103,12 +115,14 @@ export function SettingsView({
   readonly darkTheme: DarkTheme;
   readonly caretColor: CaretColor;
   readonly textFont: TextFont;
+  readonly handwritingFace: HandwritingFace;
   readonly markerStyles: readonly OutlineMarkerStyle[];
   readonly onThemeModeChange: (mode: ThemeMode) => void;
   readonly onLightThemeChange: (theme: LightTheme) => void;
   readonly onDarkThemeChange: (theme: DarkTheme) => void;
   readonly onCaretColorChange: (color: CaretColor) => void;
   readonly onTextFontChange: (font: TextFont) => void;
+  readonly onHandwritingFaceChange: (face: HandwritingFace) => void;
   readonly onMarkerStylesChange: (styles: OutlineMarkerStyle[]) => void;
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
@@ -216,6 +230,15 @@ export function SettingsView({
                 optionSuffix="outline text"
                 onChange={onTextFontChange}
               />
+              {textFont === "hand" && (
+                <ThemeRadioGroup
+                  title="Handwriting face"
+                  options={handwritingFaceOptions}
+                  value={handwritingFace}
+                  optionSuffix="handwriting face"
+                  onChange={onHandwritingFaceChange}
+                />
+              )}
               <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
               <OutlineMarkerGroup
                 styles={markerStyles}

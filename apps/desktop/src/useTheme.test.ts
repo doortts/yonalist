@@ -110,6 +110,22 @@ describe("useTheme", () => {
     expect(window.localStorage.getItem("yonalist.textFont.v1")).toBe("mono");
   });
 
+  // Which hand the outline is written in is its own setting, and it has to
+  // survive a restart the same way the rest of the appearance does.
+  it("keeps the handwriting face on the document and in storage", () => {
+    const { result } = renderHook(() => useTheme());
+
+    expect(result.current.handwritingFace).toBe("excalidraw");
+    expect(document.documentElement.dataset.handwritingFace).toBe("excalidraw");
+
+    act(() => result.current.setHandwritingFace("nanum"));
+
+    expect(document.documentElement.dataset.handwritingFace).toBe("nanum");
+    expect(window.localStorage.getItem("yonalist.handwritingFace.v1")).toBe(
+      "nanum"
+    );
+  });
+
   // The handwriting font is the third value the same key carries, so the
   // restart path -- read the key, stamp the attribute -- is what this pins.
   it("restores the stored handwriting font", () => {

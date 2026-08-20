@@ -782,14 +782,22 @@ export function handleImageNodeKeyDown(
       beforeId: nextSiblingId(structureNodes, node, input.structureIndex)
     } : null;
   }
+  // Backspace takes whatever stands behind the caret, which from the station
+  // past the picture -- and from the caret standing on the picture -- is the
+  // picture. Ahead of it the picture is not this key's to reach for, and the
+  // silence there also keeps the station out of the fall-through below, whose
+  // empty value would reach a command written for blank bullets. A band falls
+  // through on purpose: the band rule owns both delete keys.
   if (
     input.key === "Backspace" &&
     !input.altKey &&
     !input.ctrlKey &&
     !input.metaKey &&
-    !input.shiftKey
+    !input.shiftKey &&
+    !input.hasSelection
   ) {
-    return null;
+    if (input.imageEdge === "before") return null;
+    return input.repeat ? { kind: "consume" } : { kind: "trash" };
   }
   // A textarea gets its copy and cut as native clipboard events; WebKit sends
   // none for a focused div, so the image reads the chord itself.

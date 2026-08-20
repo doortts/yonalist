@@ -400,4 +400,50 @@ describe("ImageNodeContent", () => {
     expect(imageActionMocks.download)
       .toHaveBeenCalledWith(store, "image-1", "cat.png", "image/png");
   });
+  // Both halves of the guard are load-bearing, and each layer proves its own:
+  // the menu is a child of the row and the lightbox reaches it through a
+  // portal, so a one-sided guard leaves the other layer's keys deleting the
+  // picture underneath it.
+  it("suspends the row's key surface while a layer is open", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const store = {
+      images: { resize: vi.fn() },
+      deleteSubtree: vi.fn()
+    } as unknown as NotesStore;
+    const onKeyDown = vi.fn();
+    render(
+      <ImageNodeContent
+        node={node()}
+        residency={residency}
+        store={store}
+        onKeyDown={onKeyDown}
+      />
+    );
+    const image = await screen.findByRole("img", { name: "cat.png" });
+    const trigger = screen.getByRole("button", {
+      name: "Image actions for cat.png"
+    });
+
+    fireEvent.click(trigger);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Backspace" });
+    expect(onKeyDown).not.toHaveBeenCalled();
+
+    // Closed again, the row hears its own keys as it always did.
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    fireEvent.keyDown(
+      screen.getByRole("group", { name: "Cursor after cat.png" }),
+      { key: "Backspace" }
+    );
+    expect(onKeyDown).toHaveBeenCalledOnce();
+
+    fireEvent.doubleClick(image);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Backspace" });
+    expect(onKeyDown).toHaveBeenCalledOnce();
+  });
 });

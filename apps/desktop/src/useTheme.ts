@@ -13,12 +13,15 @@ export type ResolvedTheme = LightTheme | DarkTheme;
 export type CaretColor = "auto" | string;
 /** What the outline's own text is set in; the rest of the app never changes. */
 export type TextFont = "sans" | "mono" | "hand";
+/** Which hand writes the outline once the outline text is handwriting. */
+export type HandwritingFace = "excalidraw" | "nanum";
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
 const lightThemeStorageKey = "yonalist.lightTheme.v1";
 const darkThemeStorageKey = "yonalist.darkTheme.v1";
 const caretColorStorageKey = "yonalist.caretColor.v1";
 const textFontStorageKey = "yonalist.textFont.v1";
+const handwritingFaceStorageKey = "yonalist.handwritingFace.v1";
 
 function readStoredValue(key: string): string | null {
   try {
@@ -79,6 +82,12 @@ function loadTextFont(): TextFont {
   return stored === "mono" || stored === "hand" ? stored : "sans";
 }
 
+function loadHandwritingFace(): HandwritingFace {
+  return readStoredValue(handwritingFaceStorageKey) === "nanum"
+    ? "nanum"
+    : "excalidraw";
+}
+
 function systemPrefersDark(): boolean {
   return (
     typeof window.matchMedia === "function" &&
@@ -93,6 +102,9 @@ export function useTheme() {
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
   const [caretColor, setCaretColorState] = useState<CaretColor>(() => loadCaretColor());
   const [textFont, setTextFontState] = useState<TextFont>(() => loadTextFont());
+  const [handwritingFace, setHandwritingFaceState] = useState<HandwritingFace>(
+    () => loadHandwritingFace()
+  );
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") {
@@ -135,6 +147,10 @@ export function useTheme() {
     document.documentElement.dataset.textFont = textFont;
   }, [textFont]);
 
+  useEffect(() => {
+    document.documentElement.dataset.handwritingFace = handwritingFace;
+  }, [handwritingFace]);
+
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
     writeStoredValue(themeModeStorageKey, next);
@@ -160,6 +176,11 @@ export function useTheme() {
     writeStoredValue(textFontStorageKey, next);
   }, []);
 
+  const setHandwritingFace = useCallback((next: HandwritingFace) => {
+    setHandwritingFaceState(next);
+    writeStoredValue(handwritingFaceStorageKey, next);
+  }, []);
+
   return {
     mode,
     setMode,
@@ -171,6 +192,8 @@ export function useTheme() {
     setCaretColor,
     textFont,
     setTextFont,
+    handwritingFace,
+    setHandwritingFace,
     resolvedTheme
   };
 }
