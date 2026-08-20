@@ -1039,6 +1039,41 @@ fn merge_backward_rejects_nonadjacent_or_structurally_occupied_predecessors() {
         })
         .is_err()
     );
+
+    // The merge drops the row it reads, so a picture behind the caret would
+    // lose its attachment to a keystroke aimed at text. This refusal is the
+    // last line holding that, whatever a client sends.
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::ImportImages {
+            parent_id: id("previous"),
+            position: Position::at_end(),
+            nodes: vec![ImportImageNode {
+                id: id("picture"),
+                image: pasted_image(),
+            }],
+        },
+    );
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("below"),
+            parent_id: id("previous"),
+            position: Position::at_end(),
+            text: "Below".into(),
+        },
+    );
+    assert!(
+        tree.plan(NotesCommand::MergeNodeBackward {
+            id: id("below"),
+            previous_id: id("picture"),
+            previous_text: "sample.png".into(),
+            current_text: "Below".into(),
+        })
+        .is_err(),
+        "a picture's filename is no text to merge, and the merge would take the \
+         attachment with the row"
+    );
 }
 
 #[test]
