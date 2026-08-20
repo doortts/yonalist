@@ -122,6 +122,7 @@ for (const path of frontendSources) visitFrontend(resolve(path), []);
 
 const expectedCommands = [
   "notes_bootstrap",
+  "notes_pages",
   "notes_query_viewport",
   "notes_query_forest",
   "notes_execute",

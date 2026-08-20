@@ -280,29 +280,7 @@ export class NotesStore {
 
   private async refreshPages(): Promise<void> {
     try {
-      const home = await this.api.queryViewport({
-        pageId: ROOT_ID,
-        anchorId: null,
-        beforeCursor: null,
-        afterCursor: null,
-        limit: VIEWPORT_LIMIT
-      });
-      this.update({
-        // The root's window carries its whole subtree in path order, and a
-        // page is only ever a live child of the root itself.
-        // ponytail: the window is cut to VIEWPORT_LIMIT rows before this
-        // filter ever runs, so a vault whose first pages hold more than that
-        // many descendants re-reads a page list missing its tail. A children
-        // query of its own -- `queries::bootstrap`'s SELECT, lifted into a
-        // command -- is what removes the ceiling.
-        pages: home.nodes
-          .filter((node) => node.parentId === ROOT_ID && !node.deleted)
-          .map((node) => ({
-            id: node.id,
-            title: node.text,
-            sortKey: node.sortKey
-          }))
-      });
+      this.update({ pages: await this.api.pages() });
     } catch {
       // The list stays as it was. A window showing a page list one edit
       // behind is better than one showing an error over it.

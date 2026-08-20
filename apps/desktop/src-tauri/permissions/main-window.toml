@@ -3,6 +3,7 @@ identifier = "main-window-notes-commands"
 description = "Allows the Yonalist v2 main window to invoke the bounded Notes API."
 commands.allow = [
   "notes_bootstrap",
+  "notes_pages",
   "notes_query_viewport",
   "notes_query_forest",
   "notes_execute",

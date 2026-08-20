@@ -1,6 +1,7 @@
 import type { CommandEnvelope } from "../../../../packages/contracts/generated/CommandEnvelope";
 import type { MutationReceipt } from "../../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
+import type { PageSummary } from "../../../../packages/contracts/generated/PageSummary";
 import type { NotesApi } from "../api";
 import type { SyncConflict } from "../../../../packages/contracts/generated/SyncConflict";
 import { previewForest } from "./previewForest";
@@ -606,17 +607,21 @@ const previewConflicts: SyncConflict[] = [
   }
 ];
 
+function previewPages(): PageSummary[] {
+  return nodes
+    .filter((node) => node.parentId === ROOT_ID && !node.deleted)
+    .map((node) => ({
+      id: node.id,
+      title: node.text,
+      sortKey: node.sortKey
+    }))
+    .sort((left, right) =>
+      left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+}
+
 export const previewNotesApi: NotesApi = {
   async bootstrap() {
-    const pages = nodes
-      .filter((node) => node.parentId === ROOT_ID && !node.deleted)
-      .map((node) => ({
-        id: node.id,
-        title: node.text,
-        sortKey: node.sortKey
-      }))
-      .sort((left, right) =>
-        left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+    const pages = previewPages();
     return {
       sessionId,
       revision,
@@ -632,6 +637,11 @@ export const previewNotesApi: NotesApi = {
       history: previewHistory(undoStack.length, redoStack.length)
     };
   },
+
+  async pages() {
+    return previewPages();
+  },
+
   async queryViewport(request) {
     return {
       pageId: request.pageId,
