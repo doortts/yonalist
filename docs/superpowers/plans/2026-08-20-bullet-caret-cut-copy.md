@@ -375,7 +375,8 @@ HTML도 올라갔다. 그런데 `data-wf-layout`은 살아 있고
 `data-yonalist-outline-clipboard` 속성으로 간다. 같은 pasteboard 덤프가 리스트
 요소의 `data-` 속성은 살아남는다는 증거다(`data-wf-layout`). 래퍼 `<div>`를
 새로 씌우지 않은 이유는 밖으로 나가는 fragment를 그대로 두기 위해서다 — 바깥
-앱이 읽는 마크업은 예전과 같은 리스트 그대로다.
+앱이 읽는 것은 예전과 같은 리스트 구조이고, 늘어난 것은 첫 요소에 붙은 속성
+하나뿐이다(payload 크기만큼 길어지므로 바이트가 같다는 뜻은 아니다).
 
 읽는 쪽 `extractOutlinePayload`는 정규식을 버리고 `DOMParser`로 파싱해 속성을
 찾는다. 마크업이 남의 엔진을 한 번 거쳐 돌아오므로 인용부호·속성 순서·속성이
@@ -392,16 +393,27 @@ HTML도 올라갔다. 그런데 `data-wf-layout`은 살아 있고
 그 형태 — 에서도 payload가 돌아와야 한다(`outlineClipboard.test.ts`의
 "round-trips the payload through the markup a WebView writes out").
 
-## 확정 2026-08-21 — 고친 빌드의 실앱 증거
+## 실앱 증거 2026-08-21 — 쓰는 쪽 절반만, 그것도 폐기된 담체로
 
-캐럿만 둔 불릿에 ⌘C, pasteboard `public.html`:
+캐럿만 둔 불릿에 ⌘C를 누른 직후의 pasteboard `public.html`. **첫 번째 시도의
+빌드**(래퍼 `<div>`를 쓰던 코드)에서 뜬 것이고, 지금 코드가 내보내는 `<ul>`
+담체는 아직 한 번도 덤프하지 않았다:
 
 ```
-<head><meta charset="UTF-8"></head><ul data-yonalist-outline-clipboard="eyJraW5k…"
-  style="caret-color: rgb(0, 0, 0); …"><li data-wf-layout="bullet">[ ] …</li></ul>
+<head><meta charset="UTF-8"></head><div data-yonalist-outline-clipboard="eyJraW5k…"
+  style="caret-color: rgb(0, 0, 0); …"><ul><li data-wf-layout="bullet">[ ] …</li></ul></div>
 ```
 
-속성이 살아남았고 base64는 `kind: yonalist-outline-clipboard`, `version: 1`,
-`marker: "todo"`로 디코드됐다. 남는 검증은 읽는 쪽 하나다 — 같은 클립보드를
-아웃라인에 붙여넣어 행으로 들어오는지. WKWebView가 `getData("text/html")`에
-무엇을 돌려주는지는 pasteboard 덤프가 답하지 않는다.
+여기서 확정된 사실은 하나다 — `data-` 속성은 WebView의 마크업 재작성을
+살아남는다. base64는 `kind: yonalist-outline-clipboard`, `version: 1`,
+`marker: "todo"`로 디코드됐다.
+
+열려 있는 확인 두 개:
+
+1. **쓰는 쪽, 새 담체.** 첫 `<ul>`/`<ol>`에 붙은 속성이 같은 재작성을
+   살아남는지. ⌘C 한 번 뒤 pasteboard `public.html`을 다시 읽으면 끝난다.
+2. **읽는 쪽.** 같은 클립보드를 아웃라인에 붙여넣어 행으로 들어오는지.
+   WKWebView가 `getData("text/html")`에 무엇을 돌려주는지는 pasteboard 덤프가
+   답하지 않는다 — `com.apple.WebKit.custom-pasteboard-data`가 `text/html`을
+   타입 목록에 올려 두고도 값은 들고 있지 않다. 잎 행 하나를 ⌘C한 뒤 빈 행에
+   ⌘V해서, 새 형제 행이 생기면 닫힌 것이고 `- A`라는 글자가 박히면 깨진 것이다.
