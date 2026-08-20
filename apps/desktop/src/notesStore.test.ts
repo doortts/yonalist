@@ -1607,6 +1607,15 @@ describe("NotesStore 재부트스트랩", () => {
     expect(store.getSnapshot().revision).toBe(13);
     expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["guide"]);
   });
+
+  it("이미 읽는 중이면 두 번 읽지 않는다", async () => {
+    const notes = api(async () => boot.viewport as ViewportPage);
+    const store = new NotesStore(notes);
+
+    await Promise.all([store.bootstrap(), store.bootstrap()]);
+
+    expect(notes.bootstrap).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("다른 기기의 변경 흡수", () => {
