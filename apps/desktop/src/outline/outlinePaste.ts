@@ -38,6 +38,9 @@ export interface PastedOutlineNode {
  * content, and content is not attributes.
  */
 function encodedPayload(html: string): string | null {
+  // Every paste of someone else's markup passes through here, and building a
+  // document out of it to find nothing is work the substring answers for.
+  if (!html.includes(PAYLOAD_ATTRIBUTE)) return null;
   try {
     return new DOMParser()
       .parseFromString(html, "text/html")

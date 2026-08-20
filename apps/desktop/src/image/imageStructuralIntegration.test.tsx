@@ -280,7 +280,7 @@ describe("image node structural parity", () => {
     expect(await (await item.data["text/plain"]!).text())
       .toBe("- cat.png\n- dog.png");
     expect(await (await item.data["text/html"]!).text())
-      .toContain('data-yonalist-outline-clipboard="');
+      .toContain('<ul data-yonalist-outline-clipboard="');
   });
 
   it("multi-selects an image with a bullet and indents one ordered batch", async () => {

@@ -32,6 +32,7 @@ import {
 import {
   capturePane,
   emptyPaneLocation,
+  owningPageId,
   zoomEntryFocus,
   type AppNavigationLocation,
   type PaneFocusSnapshot
@@ -64,6 +65,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     store.subscribeShell,
     store.getShellSnapshot,
     store.getShellSnapshot
+  );
+  // Only for the page list's active row: which page a zoom is inside is a
+  // question about the rows, and the shell snapshot does not carry them. It
+  // costs this window one more render per structural edit -- an optimistic
+  // move publishes rows before its receipt publishes anything else -- and none
+  // per keystroke, since a draft publishes to its own row alone.
+  const outline = useSyncExternalStore(
+    store.subscribeOutline,
+    store.getOutlineSnapshot,
+    store.getOutlineSnapshot
   );
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -218,6 +229,25 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // Home is the root page, and the root is no page's row, so the pane gets a
   // titleless stand-in rather than a lookup that can never hit.
   const atHome = state.activePageId === ROOT_ID;
+  // A zoom into home is a page opened by its own bullet: the page list has a
+  // row for it, so that row is the one the reader is on, not All. The rows the
+  // walk reads are the ones the pane is showing, which is what the zoom root
+  // came from; a page it does not list is a page that has gone, and All stands
+  // in until the pane follows.
+  const zoomedPageId = useMemo(() => {
+    const owner = owningPageId(primaryZoomRootId, outline.nodes);
+    return owner && state.pages.some((page) => page.id === owner)
+      ? owner
+      : null;
+  }, [outline.nodes, primaryZoomRootId, state.pages]);
+  // A filter or a search takes the page rows off screen, and a row that is not
+  // there cannot be the one the reader is on: All keeps the mark, the way it
+  // does with no zoom at all.
+  const pageRowsListed = libraryView === "all" && query.trim().length === 0;
+  const currentPageId = (pageRowsListed ? zoomedPageId : null) ??
+    state.activePageId;
+  // The All row heads the list it lists: home, unzoomed, with no filter on.
+  const atAllPages = currentPageId === ROOT_ID && libraryView === "all";
   // The page nobody has written in yet is open and has no row in the list, so
   // the store is what answers for it. Only that one: an id the list has lost
   // for any other reason -- a page trashed on another device, a stale history
@@ -296,6 +326,36 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     }
     void store.flushAllDrafts().then(action);
   }, [store]);
+  // Coming out of a zoom leaves the caret where the reader put it; going in
+  // places it, since the rows the reader was looking at are gone from the pane.
+  const zoomEntry = useCallback((nodeId: string | null) => {
+    if (!nodeId) return null;
+    const snapshot = store.getSnapshot();
+    return zoomEntryFocus(nodeId, snapshot.nodes, snapshot.drafts);
+  }, [store]);
+  const updatePrimaryZoom = useCallback((nodeId: string | null) => {
+    if (nodeId === primaryZoomRootId) return;
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      const focus = zoomEntry(nodeId);
+      setPrimaryZoomRootId(nodeId);
+      setPrimaryRestore({
+        epoch: ++restoreEpoch.current, selectedIds: [], focus
+      });
+      recordNavigation(before, {
+        ...before,
+        primaryZoomRootId: nodeId,
+        primarySelectedIds: [],
+        primaryFocus: focus
+      });
+    });
+  }, [
+    afterDraftFlush,
+    captureNavigation,
+    primaryZoomRootId,
+    recordNavigation,
+    zoomEntry
+  ]);
   const openPage = useCallback(async (pageId: string) => {
     // Asking for a page is asking to read it, so the settings screen goes --
     // including when the page asked for is the one already open, which is the
@@ -338,8 +398,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     setSettingsOpen(false);
     setLibraryView("all");
     setQuery("");
+    // A zoom is what stands between the reader and the page list when home is
+    // already the open page, and `openPage` returns early on the page it is
+    // already on. Elsewhere the page opening clears the zoom itself, and
+    // clearing it here would record a second move for nothing.
+    if (store.getSnapshot().activePageId === ROOT_ID) updatePrimaryZoom(null);
     openHome();
-  }, [openHome]);
+  }, [openHome, store, updatePrimaryZoom]);
   /**
    * The page at one place in the sidebar's list, by its number. The list is
    * the store's page order, which is the order the sidebar draws -- a filter
@@ -554,36 +619,6 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     recordMutationNavigation,
     store
   ]);
-  // Coming out of a zoom leaves the caret where the reader put it; going in
-  // places it, since the rows the reader was looking at are gone from the pane.
-  const zoomEntry = useCallback((nodeId: string | null) => {
-    if (!nodeId) return null;
-    const snapshot = store.getSnapshot();
-    return zoomEntryFocus(nodeId, snapshot.nodes, snapshot.drafts);
-  }, [store]);
-  const updatePrimaryZoom = useCallback((nodeId: string | null) => {
-    if (nodeId === primaryZoomRootId) return;
-    const before = captureNavigation();
-    afterDraftFlush(() => {
-      const focus = zoomEntry(nodeId);
-      setPrimaryZoomRootId(nodeId);
-      setPrimaryRestore({
-        epoch: ++restoreEpoch.current, selectedIds: [], focus
-      });
-      recordNavigation(before, {
-        ...before,
-        primaryZoomRootId: nodeId,
-        primarySelectedIds: [],
-        primaryFocus: focus
-      });
-    });
-  }, [
-    afterDraftFlush,
-    captureNavigation,
-    primaryZoomRootId,
-    recordNavigation,
-    zoomEntry
-  ]);
   const openSplit = useCallback((nodeId: string) => {
     const before = captureNavigation();
     afterDraftFlush(() => {
@@ -778,14 +813,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     is the way back out of both. */}
                 <div
                   className="notes-library-page-row"
-                  data-active={atHome && libraryView === "all" ? "true" : undefined}
+                  data-active={atAllPages ? "true" : undefined}
                 >
                   <button
                     className="notes-library-page"
                     type="button"
-                    aria-current={
-                      atHome && libraryView === "all" ? "page" : undefined
-                    }
+                    aria-current={atAllPages ? "page" : undefined}
                     aria-keyshortcuts="Meta+0 Control+0"
                     onClick={openAllPages}
                   >
@@ -794,14 +827,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     <ShortcutHint mac="⌘0" other="Ctrl+0" />
                   </button>
                 </div>
-                {libraryView === "all" &&
-                  query.trim().length === 0 &&
+                {pageRowsListed &&
                   state.pages.map((page, place) => (
                     <LibraryPageRow
                       key={page.id}
                       page={page}
                       place={place < 9 ? place + 1 : undefined}
-                      active={page.id === state.activePageId}
+                      active={page.id === currentPageId}
                       store={store}
                       onOpen={() => void openPage(page.id)}
                       onDelete={() => deletePage(page.id)}

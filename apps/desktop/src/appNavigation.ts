@@ -1,5 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { outlinePane } from "./outline/outlinePaneRegistry";
+import { ROOT_ID } from "./store/storeSupport";
 
 export type PaneId = "primary" | "secondary";
 
@@ -107,6 +108,29 @@ export function zoomEntryFocus(
     selectionStart: end,
     selectionEnd: end
   };
+}
+
+/**
+ * The page a row belongs to: the ancestor of it that is a child of the root. A
+ * zoom is still inside its page, so this is the page the sidebar names however
+ * deep the reader has gone. Null once the walk leaves the loaded rows -- on a
+ * page other than home the page's own node is kept out of them, and the open
+ * page already answers for that case.
+ */
+export function owningPageId(
+  nodeId: string | null,
+  nodes: readonly NoteView[]
+): string | null {
+  if (!nodeId) return null;
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const walked = new Set<string>();
+  let current = byId.get(nodeId);
+  while (current && current.parentId !== ROOT_ID) {
+    if (walked.has(current.id)) return null;
+    walked.add(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return current?.id ?? null;
 }
 
 export function emptyPaneLocation(

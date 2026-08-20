@@ -1772,6 +1772,121 @@ describe("Yonalist v2 desktop shell", () => {
     expect(document.querySelector(".notes-page-header")).toBeNull();
   });
 
+  /** A bullet under a page, so a zoom two levels in has a page to belong to. */
+  function homeNestedApi() {
+    const notesApi = homeApi();
+    const rows = [
+      pageRow("page-1", "Today", 1_024),
+      pageRow("page-2", "Backlog", 2_048),
+      { ...pageRow("step-1", "Draft the plan", 1_024), parentId: "page-2" }
+    ];
+    notesApi.queryViewport = vi.fn().mockImplementation(async (request) => ({
+      pageId: request.pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: request.pageId === ROOT_ID ? rows : []
+    }));
+    return notesApi;
+  }
+
+  /** The rows the Pages list marks as where the reader is. */
+  function activeLibraryRows() {
+    return [...document.querySelectorAll<HTMLElement>(
+      ".notes-library-page-row[data-active='true']"
+    )];
+  }
+
+  it("keeps the zoomed page's sidebar row active at any depth", async () => {
+    render(<App api={homeNestedApi()} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    await homeRow("Today");
+
+    // Second row of home: Backlog's own bullet is that page's title.
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[1]!);
+
+    await waitFor(() => {
+      const active = activeLibraryRows();
+      expect(active).toHaveLength(1);
+      expect(active[0]).toHaveTextContent("Backlog");
+    });
+    const sidebar = screen.getByRole("navigation", { name: "Navigation" });
+    expect(within(sidebar).getByRole("button", { name: "Backlog" }))
+      .toHaveAttribute("aria-current", "page");
+
+    // One level further in: the bullet is nobody's page, so the page it sits
+    // under is still the row the reader is on.
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]!);
+
+    await waitFor(() => expect(screen.getByDisplayValue("Draft the plan"))
+      .toHaveAttribute("aria-label", "Page title"));
+    const nested = activeLibraryRows();
+    expect(nested).toHaveLength(1);
+    expect(nested[0]).toHaveTextContent("Backlog");
+
+    fireEvent.click(within(breadcrumb()).getByRole("button", {
+      name: "All pages"
+    }));
+
+    await homeRow("Today");
+    const home = activeLibraryRows();
+    expect(home).toHaveLength(1);
+    expect(home[0]).toHaveTextContent("All");
+  });
+
+  it("keeps the open page's row active through a zoom inside it", async () => {
+    render(<App api={api()} />);
+    await screen.findByDisplayValue("First thought");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]!);
+
+    await waitFor(() => expect(screen.getByDisplayValue("First thought"))
+      .toHaveAttribute("aria-label", "Page title"));
+    const active = activeLibraryRows();
+    expect(active).toHaveLength(1);
+    expect(active[0]).toHaveTextContent("Today");
+  });
+
+  it("leaves the mark on All while a search hides the page rows", async () => {
+    render(<App api={homeNestedApi()} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    await homeRow("Today");
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[1]!);
+    await waitFor(() => expect(activeLibraryRows()[0])
+      .toHaveTextContent("Backlog"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search Yonalist" }), {
+      target: { value: "plan" }
+    });
+
+    // The zoomed page has no row left to carry the mark, so the row that heads
+    // the list carries it.
+    const active = activeLibraryRows();
+    expect(active).toHaveLength(1);
+    expect(active[0]).toHaveTextContent("All");
+  });
+
+  it("comes out of a zoom through the All row, which is what it offers", async () => {
+    render(<App api={homeNestedApi()} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    await homeRow("Today");
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[1]!);
+    await waitFor(() => expect(activeLibraryRows()[0])
+      .toHaveTextContent("Backlog"));
+
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+
+    await homeRow("Today");
+    expect(document.querySelector(".notes-page-header")).toBeNull();
+    const active = activeLibraryRows();
+    expect(active).toHaveLength(1);
+    expect(active[0]).toHaveTextContent("All");
+  });
+
   /** Alpha › Beta, so a two-level zoom has a real ancestor to walk. */
   function nestedApi() {
     const notesApi = api();
