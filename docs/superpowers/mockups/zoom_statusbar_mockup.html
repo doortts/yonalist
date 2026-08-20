@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yonalist Zoom Status Bar Indicator - UI Mockups</title>
+  <style>
+    :root[data-theme="dark"] {
+      --bg-app: #15171c;
+      --bg-sidebar: #181818;
+      --bg-detail: #181818;
+      --bg-card: #131417;
+      --bg-hover: rgba(255, 255, 255, 0.08);
+      --bg-active: rgba(255, 255, 255, 0.14);
+      --border: #2c3039;
+      --border-strong: #3b404b;
+      --border-subtle: rgba(255, 255, 255, 0.1);
+      --text-1: #e7eaef;
+      --text-2: #a4acb9;
+      --text-3: #757f8e;
+      --accent: #539bf5;
+      --accent-soft: rgba(83, 155, 245, 0.15);
+      --danger: #f47067;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    :root[data-theme="light"] {
+      --bg-app: #f5f6f8;
+      --bg-sidebar: #f2f3f5;
+      --bg-detail: #f8f9fb;
+      --bg-card: #ffffff;
+      --bg-hover: rgba(17, 24, 39, 0.06);
+      --bg-active: rgba(17, 24, 39, 0.12);
+      --border: #e5e7eb;
+      --border-strong: #d2d6dc;
+      --border-subtle: rgba(0, 0, 0, 0.1);
+      --text-1: #1f2328;
+      --text-2: #59626e;
+      --text-3: #8c95a1;
+      --accent: #2563eb;
+      --accent-soft: rgba(37, 99, 235, 0.09);
+      --danger: #c2402a;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-app);
+      color: var(--text-1);
+      min-height: 100vh;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .header-bar {
+      width: 100%;
+      max-width: 960px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 18px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+    }
+
+    .header-title h1 {
+      font-size: 17px;
+      font-weight: 600;
+    }
+    .header-title p {
+      font-size: 12px;
+      color: var(--text-3);
+      margin-top: 2px;
+    }
+
+    .theme-toggle-btn {
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    /* Controls Panel */
+    .controls-panel {
+      width: 100%;
+      max-width: 960px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .control-label {
+      font-weight: 600;
+      color: var(--text-2);
+    }
+
+    .btn-chip {
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      padding: 4px 10px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 120ms ease;
+    }
+    .btn-chip:hover {
+      background: var(--bg-active);
+      border-color: var(--border-strong);
+    }
+    .btn-chip.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    /* Option Tabs */
+    .option-tabs {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      max-width: 960px;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-2);
+      cursor: pointer;
+      text-align: left;
+      transition: all 150ms ease;
+    }
+    .tab-btn:hover {
+      border-color: var(--border-strong);
+      color: var(--text-1);
+    }
+    .tab-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--text-1);
+    }
+    .tab-btn .title {
+      font-weight: 600;
+      font-size: 14px;
+      display: block;
+      margin-bottom: 4px;
+    }
+    .tab-btn .desc {
+      font-size: 11px;
+      color: var(--text-3);
+      line-height: 1.3;
+    }
+
+    /* App Shell Mockup */
+    .app-preview-window {
+      width: 100%;
+      max-width: 960px;
+      height: 480px;
+      background: var(--bg-detail);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* App Header */
+    .app-header {
+      height: 48px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      background: var(--bg-detail);
+    }
+
+    .app-header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .app-header-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      border: none;
+      background: transparent;
+      color: var(--text-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+    }
+    .icon-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-1);
+    }
+
+    /* App Body */
+    .app-body {
+      flex: 1;
+      padding: 24px 32px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .bullet-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .bullet-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-3);
+      display: inline-block;
+      margin-top: 6px;
+    }
+    .bullet-title {
+      font-weight: 650;
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+    .bullet-indent {
+      padding-left: 20px;
+    }
+
+    /* Statusbar */
+    .app-statusbar {
+      height: 32px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-detail);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 12px;
+      color: var(--text-3);
+      user-select: none;
+    }
+
+    .statusbar-left {
+      flex: 1;
+      display: flex;
+      align-items: center;
+    }
+
+    .statusbar-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 500;
+    }
+
+    .statusbar-selection {
+      color: var(--accent);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .statusbar-state {
+      color: var(--text-3);
+      font-weight: 600;
+    }
+
+    /* Instant CSS Tooltip */
+    [data-tooltip] {
+      position: relative;
+    }
+    [data-tooltip]::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: calc(100% + 6px);
+      right: 0;
+      padding: 4px 8px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-card);
+      color: var(--text-1);
+      font-size: 11px;
+      font-weight: 500;
+      white-space: nowrap;
+      border: 1px solid var(--border-strong);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 80ms ease, visibility 80ms ease;
+      z-index: 10000;
+    }
+    [data-tooltip]:hover::after {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* Option A Styles (Interactive Badge Button) */
+    .zoom-badge-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      background: var(--bg-hover);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: var(--text-2);
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      cursor: pointer;
+      transition: all 120ms ease;
+    }
+    .zoom-badge-btn:hover {
+      background: var(--bg-active);
+      color: var(--text-1);
+      border-color: var(--border-strong);
+    }
+    .zoom-badge-btn:active {
+      transform: scale(0.97);
+    }
+
+    /* Option B Styles (Plain Text) */
+    .zoom-plain-text {
+      color: var(--text-3);
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Option C Styles (Icon Chip) */
+    .zoom-icon-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px 7px;
+      background: rgba(83, 155, 245, 0.12);
+      border: 1px solid rgba(83, 155, 245, 0.25);
+      border-radius: 10px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      cursor: pointer;
+      transition: all 120ms ease;
+    }
+    .zoom-icon-chip:hover {
+      background: rgba(83, 155, 245, 0.2);
+    }
+
+    /* Option D Styles (Mini Zoom Controller) */
+    .zoom-stepper-group {
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-hover);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .zoom-stepper-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-2);
+      padding: 2px 5px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .zoom-stepper-btn:hover {
+      background: var(--bg-active);
+      color: var(--text-1);
+    }
+    .zoom-stepper-label {
+      padding: 2px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-1);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .notice-box {
+      width: 100%;
+      max-width: 960px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      font-size: 13px;
+      color: var(--text-2);
+      line-height: 1.5;
+    }
+    .notice-box strong {
+      color: var(--text-1);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Info Header -->
+  <header class="header-bar">
+    <div class="header-title">
+      <h1>Yonalist Zoom Status Bar Indicator - 디자인 시안</h1>
+      <p>현재 페이지 Zoom 레벨이 100%가 아닐 때 하단 상태바(Status bar) 표시 방식 시안입니다.</p>
+    </div>
+    <button class="theme-toggle-btn" id="theme-toggle">🌙 다크 모드 전환</button>
+  </header>
+
+  <!-- Interactive Controls -->
+  <div class="controls-panel">
+    <div class="control-group">
+      <span class="control-label">🔍 Zoom 레벨 테스트:</span>
+      <button class="btn-chip" onclick="setZoom(80)">80%</button>
+      <button class="btn-chip" onclick="setZoom(90)">90%</button>
+      <button class="btn-chip active" onclick="setZoom(100)">100% (기본값)</button>
+      <button class="btn-chip" onclick="setZoom(110)">110%</button>
+      <button class="btn-chip" onclick="setZoom(125)">125%</button>
+      <button class="btn-chip" onclick="setZoom(150)">150%</button>
+    </div>
+
+    <div class="control-group">
+      <span class="control-label">선택 항목:</span>
+      <button class="btn-chip" onclick="setSelection(0)">0개</button>
+      <button class="btn-chip active" onclick="setSelection(3)">3개 선택됨</button>
+    </div>
+  </div>
+
+  <!-- Option Selection Tabs -->
+  <div class="option-tabs">
+    <button class="tab-btn active" onclick="selectOption('A')">
+      <span class="title">시안 A (추천: 인터랙티브 리셋 뱃지)</span>
+      <span class="desc">마우스 호버 시 툴팁 `Reset zoom to 100%` 노출. 클릭 시 100%로 즉시 리셋.</span>
+    </button>
+    <button class="tab-btn" onclick="selectOption('B')">
+      <span class="title">시안 B (단순 텍스트)</span>
+      <span class="desc">클릭 인터랙션 없이 `110%` 수치만 텍스트로 표시.</span>
+    </button>
+    <button class="tab-btn" onclick="selectOption('C')">
+      <span class="title">시안 C (강조 캡슐 뱃지)</span>
+      <span class="desc">액센트 컬러의 캡슐형 뱃지 스타일 + 클릭 시 100% 리셋.</span>
+    </button>
+    <button class="tab-btn" onclick="selectOption('D')">
+      <span class="title">시안 D (스텝 컨트롤러)</span>
+      <span class="desc">상태바에서 [-] [ 110% ] [+] 로 즉시 줌 미세 조절 및 리셋.</span>
+    </button>
+  </div>
+
+  <!-- Simulated Yonalist Desktop App Window -->
+  <div class="app-preview-window">
+    <!-- Window Top Header -->
+    <div class="app-header">
+      <div class="app-header-left">
+        <button class="icon-btn" title="All pages">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </button>
+        <span>Yonalist</span>
+      </div>
+      <div class="app-header-right">
+        <button class="icon-btn" data-tooltip="Export as">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button class="icon-btn" data-tooltip="Hide completed items">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
+        <button class="icon-btn" data-tooltip="Maximize detail">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Window Main Body -->
+    <div class="app-body" id="app-body-content">
+      <div class="bullet-title">• 버그 리포트 (현재 Zoom: <span id="current-zoom-label">100%</span>)</div>
+      <div class="bullet-row">
+        <span class="bullet-dot"></span>
+        <span>우측 상단 메뉴 버그 수정 완료</span>
+      </div>
+      <div class="bullet-row bullet-indent">
+        <span class="bullet-dot"></span>
+        <span>인스턴트 툴팁 0ms 표시 적용</span>
+      </div>
+      <div class="bullet-row bullet-indent">
+        <span class="bullet-dot"></span>
+        <span>하단 상태바 줌 레벨 표시 기능 검토 중</span>
+      </div>
+      <div class="bullet-row">
+        <span class="bullet-dot"></span>
+        <span>Cmd+= / Cmd+- 로 줌 인/아웃 가능</span>
+      </div>
+    </div>
+
+    <!-- Window Bottom Statusbar -->
+    <footer class="app-statusbar">
+      <div class="statusbar-left">
+        <!-- Error or feedback slot -->
+      </div>
+      <div class="statusbar-actions">
+        <!-- Selected Count -->
+        <span class="statusbar-selection" id="selection-slot">3 selected</span>
+
+        <!-- Zoom Indicator Slot -->
+        <span id="zoom-slot"></span>
+
+        <!-- Online State -->
+        <span class="statusbar-state">Online</span>
+      </div>
+    </footer>
+  </div>
+
+  <div class="notice-box">
+    <strong>💡 안내:</strong> 상단의 <code>Zoom 레벨 테스트</code> 버튼(80%, 110% 등)을 누르면 상태바에 해당 시안의 줌 인디케이터가 실시간으로 나타납니다. <code>100%</code>일 때는 상태바가 깨끗하게 유지되도록 자동으로 숨겨집니다.
+  </div>
+
+  <script>
+    let currentZoom = 100;
+    let selectedCount = 3;
+    let currentOption = 'A';
+    let isDark = true;
+
+    function renderZoomSlot() {
+      const slot = document.getElementById('zoom-slot');
+      const zoomLabel = document.getElementById('current-zoom-label');
+      const bodyContent = document.getElementById('app-body-content');
+
+      zoomLabel.textContent = `${currentZoom}%`;
+      bodyContent.style.fontSize = `${14 * (currentZoom / 100)}px`;
+
+      if (currentZoom === 100) {
+        slot.innerHTML = '';
+        return;
+      }
+
+      if (currentOption === 'A') {
+        slot.innerHTML = `
+          <button class="zoom-badge-btn" 
+                  data-tooltip="Reset zoom to 100%" 
+                  onclick="setZoom(100)">
+            <span>${currentZoom}%</span>
+          </button>
+        `;
+      } else if (currentOption === 'B') {
+        slot.innerHTML = `<span class="zoom-plain-text">${currentZoom}%</span>`;
+      } else if (currentOption === 'C') {
+        slot.innerHTML = `
+          <button class="zoom-icon-chip" 
+                  data-tooltip="Reset zoom to 100%" 
+                  onclick="setZoom(100)">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <span>${currentZoom}%</span>
+          </button>
+        `;
+      } else if (currentOption === 'D') {
+        slot.innerHTML = `
+          <div class="zoom-stepper-group">
+            <button class="zoom-stepper-btn" onclick="nudgeZoom(-10)">-</button>
+            <span class="zoom-stepper-label" data-tooltip="Reset to 100%" onclick="setZoom(100)" style="cursor:pointer;">${currentZoom}%</span>
+            <button class="zoom-stepper-btn" onclick="nudgeZoom(10)">+</button>
+          </div>
+        `;
+      }
+    }
+
+    function setZoom(val) {
+      currentZoom = val;
+      document.querySelectorAll('.control-group:first-child .btn-chip').forEach(btn => {
+        btn.classList.toggle('active', btn.textContent.includes(`${val}%`));
+      });
+      renderZoomSlot();
+    }
+
+    function nudgeZoom(delta) {
+      setZoom(Math.max(50, Math.min(200, currentZoom + delta)));
+    }
+
+    function setSelection(count) {
+      selectedCount = count;
+      document.querySelectorAll('.control-group:nth-child(2) .btn-chip').forEach(btn => {
+        btn.classList.toggle('active', btn.textContent.startsWith(`${count}`));
+      });
+      const selectionSlot = document.getElementById('selection-slot');
+      if (count > 0) {
+        selectionSlot.style.display = 'inline';
+        selectionSlot.textContent = `${count} selected`;
+      } else {
+        selectionSlot.style.display = 'none';
+      }
+    }
+
+    function selectOption(opt) {
+      currentOption = opt;
+      document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
+        btn.classList.toggle('active', ['A', 'B', 'C', 'D'][idx] === opt);
+      });
+      renderZoomSlot();
+    }
+
+    document.getElementById('theme-toggle').addEventListener('click', () => {
+      isDark = !isDark;
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      document.getElementById('theme-toggle').textContent = isDark ? '🌙 다크 모드' : '☀️ 라이트 모드';
+    });
+
+    // Initial default test with 110% zoom to showcase
+    setZoom(110);
+  </script>
+</body>
+</html>

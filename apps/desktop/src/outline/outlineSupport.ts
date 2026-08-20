@@ -53,6 +53,7 @@ export interface SelectionKeyboardActions {
   readonly delete: () => void;
   readonly copy: () => void;
   readonly cut: () => void;
+  readonly setCollapsed: (collapsed: boolean) => void;
 }
 
 /**
@@ -188,6 +189,7 @@ export function handleOutlineKeyDown(options: OutlineRowKeyOptions) {
     if (intent.kind === "cycleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    if (intent.kind === "setCollapsed") return selectionActions.setCollapsed(intent.collapsed);
     // The note field answers to none of the band's keys, so the band goes
     // before the caret leaves the row for it. A caret sent to the outline's far
     // end leaves it behind for the same reason: two lit things at once read as
@@ -254,6 +256,7 @@ export function handleImagePrimaryKeyDown(options: ImageRowKeyOptions) {
     if (intent.kind === "cycleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    if (intent.kind === "setCollapsed") return selectionActions.setCollapsed(intent.collapsed);
     // Same as a bullet: the band goes before the caret leaves the row, whether
     // for the note field or for the far end of the outline.
     if (intent.kind === "focusNote" || intent.kind === "focus") {
@@ -558,7 +561,18 @@ function executeRowIntent(
     case "cycleComplete":
       void store.cycleCompleted(node.id);
       return;
+    case "setCollapsed":
+      void store.setCollapsed(node.id, intent.collapsed);
+      return;
     case "trash": {
+      const targetId = intent.nodeId ?? node.id;
+      // A trash aimed past the caret's own row leaves the key's own surface
+      // standing, so there is nothing to hand the caret on to: it stays where
+      // it stood, the way it stands after eating a character.
+      if (targetId !== node.id) {
+        void store.deleteSubtree(targetId);
+        return;
+      }
       // The surface the key came from unmounts with the row it takes, so the
       // caret would be left on the document body. Its neighbour is read off the
       // rows as they still stand and taken once the command lands -- the same
@@ -568,8 +582,8 @@ function executeRowIntent(
         visibleNodes: context.visibleNodes,
         outlineRootId: context.pageId,
         scopeRef: { current: scope }
-      })([node.id]);
-      void store.deleteSubtree(node.id).then(takeCaret);
+      })([targetId]);
+      void store.deleteSubtree(targetId).then(takeCaret);
       return;
     }
     // The chooser is mounted by the row and already scopes itself to the live

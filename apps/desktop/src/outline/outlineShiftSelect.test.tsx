@@ -535,9 +535,7 @@ describe("A bare arrow against a live row band", () => {
 });
 
 describe("The modified vertical arrows against a live row band", () => {
-  // Two lit things at once read as two selections, so the band goes when the
-  // caret leaves it for the far end of the outline.
-  it("drops the band on the way to the last row", async () => {
+  it("keeps the band while folding or expanding", async () => {
     const { view } = await outline(rows);
     const editor = await placeCaret(view.container, "two", 0);
     await press(editor, "ArrowDown", { shiftKey: true });
@@ -546,10 +544,7 @@ describe("The modified vertical arrows against a live row band", () => {
 
     await press(editor, "ArrowDown", { ctrlKey: true });
 
-    expect(bandIds(view.container)).toEqual([]);
-    expect(caretOf(view.container)).toEqual({
-      nodeId: "three", start: 9, end: 9, direction: expect.anything()
-    });
+    expect(bandIds(view.container)).toEqual(["two"]);
   });
 });
 
@@ -588,10 +583,8 @@ describe("The modifier with A", () => {
   });
 });
 
-// Home is the root itself and the root is nobody's title, so the page has no
-// heading there and the chord has to land on the first row instead.
-describe("The modified Up where the page carries no title", () => {
-  it("takes the first row", async () => {
+describe("The modified vertical arrows where the page carries no title", () => {
+  it("folds the row and keeps the caret in place", async () => {
     const homeRows = [
       bullet("one", "root", SORT_KEY_STEP, "First row"),
       bullet("two", "root", SORT_KEY_STEP * 2, "AAA BBB")
@@ -602,7 +595,7 @@ describe("The modified Up where the page carries no title", () => {
     await press(editor, "ArrowUp", { ctrlKey: true });
 
     expect(caretOf(view.container)).toEqual({
-      nodeId: "one", start: 0, end: 0, direction: expect.anything()
+      nodeId: "two", start: 3, end: 3, direction: expect.anything()
     });
   });
 });

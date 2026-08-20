@@ -288,9 +288,9 @@ describe("v2 outline keyboard intent resolver", () => {
   });
   // Backspace takes what stands behind the caret. Behind the station past the
   // picture, and behind the caret standing on the picture itself, that is the
-  // picture. From the station before it the picture stands ahead instead, and
-  // the row behind that caret is not this key's to reach for.
-  it("deletes the image on Backspace from behind it, never from ahead", () => {
+  // picture. Behind the station before it stands the previous row, and a bullet
+  // there is nobody's to take from a neighbour's station.
+  it("deletes the picture behind the caret, never the one ahead", () => {
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
       key: "Backspace",
@@ -356,6 +356,81 @@ describe("v2 outline keyboard intent resolver", () => {
       ctrlKey: true,
       shiftKey: true
     }))).toEqual({ kind: "trash" });
+  });
+
+  // From the before station the row behind the caret is the previous visible
+  // row, and a picture of the same parent is taken there the way the after
+  // station takes its own -- the same act, one row boundary back. A picture at
+  // another depth, the caret's own parent, and a bullet all stay: the
+  // head-of-line merge draws those same lines, so the two backward keys read as
+  // one caret.
+  it("takes the image sibling standing behind the before station", () => {
+    const stacked = [
+      node("first", "page", "First", 1_024),
+      picture("upper", "page", 2_048),
+      picture("lower", "page", 3_072)
+    ];
+    // Production always hands the resolver both indexes, so the fixtures carry
+    // them: without one, every assertion here would walk the fallback scan and
+    // leave the lookup production uses untested.
+    const before = (
+      nodes: readonly NoteView[],
+      nodeId: string,
+      structure: readonly NoteView[] = nodes
+    ) => input({
+      nodeId,
+      key: "Backspace",
+      imageEdge: "before",
+      visibleNodes: nodes,
+      structureNodes: structure,
+      visibleIndex: new OutlineIndex(nodes),
+      structureIndex: new OutlineIndex(structure)
+    });
+    // A collapsed row hiding a child puts the structure's positions ahead of
+    // the screen's, which is what says the row behind the caret has to be
+    // counted in the list the caret is standing in.
+    const collapsed = [
+      stacked[0]!,
+      node("tucked", "first", "Tucked", 1_024),
+      stacked[1]!,
+      stacked[2]!
+    ];
+
+    expect(handleImageNodeKeyDown(before(stacked, "lower", collapsed)))
+      .toEqual({ kind: "trash", nodeId: "upper" });
+    // A text row behind the caret is the commonest thing there, and it is not
+    // this key's to take: the sibling above `upper` is a bullet.
+    expect(handleImageNodeKeyDown(before(stacked, "upper"))).toBeNull();
+    // A held key takes one picture off the stack, not the whole stack.
+    expect(handleImageNodeKeyDown({
+      ...before(stacked, "lower"),
+      repeat: true
+    })).toEqual({ kind: "consume" });
+
+    const aunt = [
+      node("parent", "page", "Parent", 1_024),
+      picture("aunt", "parent", 1_024),
+      picture("lower", "page", 2_048)
+    ];
+    expect(handleImageNodeKeyDown(before(aunt, "lower"))).toBeNull();
+
+    const nested = [picture("upper", "page", 1_024), picture("lower", "upper", 1_024)];
+    expect(handleImageNodeKeyDown(before(nested, "lower"))).toBeNull();
+
+    const captioned = [
+      picture("upper", "page", 1_024),
+      node("cap", "upper", "Cap", 1_024),
+      picture("lower", "page", 2_048)
+    ];
+    expect(handleImageNodeKeyDown(before(captioned, "lower"))).toBeNull();
+
+    expect(handleImageNodeKeyDown(before([picture("solo", "page")], "solo")))
+      .toBeNull();
+    // The caret's own row missing from the rows on screen: with no row to
+    // stand on there is no row behind it either, and the lookup that reads
+    // both off the one list says so without asking the structure for a second
+    // opinion.
+    expect(handleImageNodeKeyDown(before(stacked, "ghost"))).toBeNull();
   });
 
   it("splits the selected title range into one atomic sibling gesture", () => {
@@ -953,54 +1028,102 @@ describe("v2 outline keyboard intent resolver", () => {
     });
   });
 
-  // The chord runs to the ends of the outline, not to the ends of the row's own
-  // text, and it answers from the page title as readily as from a row.
-  it("runs the caret to the outline's ends on the modified vertical arrows", () => {
-    for (const target of ["row", "page"] as const) {
-      expect(resolveOutlineKey(input({
-        key: "ArrowUp",
-        ctrlKey: true,
-        target
-      })), `up ${target}`)
-        .toEqual({
-          kind: "focus",
-          nodeId: "page",
-          edge: "start",
-          // Home draws no title, so the first row is the top there.
-          fallbackNodeId: "parent"
-        });
-      expect(resolveOutlineKey(input({
-        key: "ArrowDown",
-        ctrlKey: true,
-        target
-      })), `down ${target}`)
-        .toEqual({ kind: "focus", nodeId: "next", edge: "end" });
-    }
-    // On a mac the same pair rides Cmd, and a chord for the other platform is
-    // nobody's binding there.
+  // Primary fold/expand shortcuts: Cmd+Up / Cmd+Down (or Ctrl+Up / Ctrl+Down)
+  // Alias fold/expand shortcuts: Cmd+Option+[ / Cmd+Option+] (or Ctrl+Alt+[ / Ctrl+Alt+])
+  it("resolves primary and alias fold/expand shortcuts on a row", () => {
+    // Primary collapse on mac (Cmd+ArrowUp)
     expect(resolveOutlineKey(input({
       key: "ArrowUp",
       metaKey: true,
       platform: "mac"
-    }))).toEqual({
-      kind: "focus",
-      nodeId: "page",
-      edge: "start",
-      fallbackNodeId: "parent"
-    });
-    // An empty outline has only its title to run to.
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Primary expand on mac (Cmd+ArrowDown)
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      metaKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Primary collapse on non-mac (Ctrl+ArrowUp)
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      ctrlKey: true,
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Primary expand on non-mac (Ctrl+ArrowDown)
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
       ctrlKey: true,
-      visibleNodes: []
-    }))).toEqual({ kind: "focus", nodeId: "page", edge: "end" });
-    // A held chord stops at the end it already reached.
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Alias collapse on mac (Cmd+Option+[)
     expect(resolveOutlineKey(input({
-      key: "ArrowDown",
+      key: "[",
+      metaKey: true,
+      altKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Alias expand on mac (Cmd+Option+])
+    expect(resolveOutlineKey(input({
+      key: "]",
+      metaKey: true,
+      altKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Alias collapse on non-mac (Ctrl+Alt+[)
+    expect(resolveOutlineKey(input({
+      key: "[",
       ctrlKey: true,
+      altKey: true,
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: true });
+
+    // Alias expand on non-mac (Ctrl+Alt+])
+    expect(resolveOutlineKey(input({
+      key: "]",
+      ctrlKey: true,
+      altKey: true,
+      platform: "other"
+    }))).toEqual({ kind: "setCollapsed", collapsed: false });
+
+    // Repeated shortcut consumes without extra dispatch
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      metaKey: true,
+      platform: "mac",
       repeat: true
     }))).toEqual({ kind: "consume" });
-    // Shift with the modifier is the row-moving binding, not this one.
+
+    expect(resolveOutlineKey(input({
+      key: "]",
+      ctrlKey: true,
+      altKey: true,
+      platform: "other",
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+
+    // Page title target consumes fold/expand chords
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      metaKey: true,
+      target: "page",
+      platform: "mac"
+    }))).toEqual({ kind: "consume" });
+
+    expect(resolveOutlineKey(input({
+      key: "[",
+      metaKey: true,
+      altKey: true,
+      target: "page",
+      platform: "mac"
+    }))).toEqual({ kind: "consume" });
+
+    // Shift with the modifier is the row-moving binding, not this one
     expect(resolveOutlineKey(input({
       key: "ArrowUp",
       ctrlKey: true,

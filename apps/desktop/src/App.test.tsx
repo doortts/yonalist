@@ -558,7 +558,8 @@ describe("Yonalist v2 desktop shell", () => {
     const first = await screen.findByDisplayValue("First thought");
     const second = screen.getByDisplayValue("Second thought");
 
-    const ordinaryExport = await screen.findByRole("button", { name: "Export" });
+    const ordinaryExport = await screen.findByRole("button", { name: "Export as" });
+    expect(ordinaryExport).toHaveAttribute("data-tooltip", "Export as");
     fireEvent.click(ordinaryExport);
     let menu = await screen.findByRole("menu", { name: "Export notes" });
     expect(within(menu).getByRole("menuitem", {
@@ -577,7 +578,7 @@ describe("Yonalist v2 desktop shell", () => {
     expect(await screen.findByRole("toolbar", {
       name: "Actions for 1 selected notes"
     })).toBeVisible();
-    const selectionExport = await screen.findByRole("button", { name: "Export" });
+    const selectionExport = await screen.findByRole("button", { name: "Export as" });
     fireEvent.click(selectionExport);
     menu = await screen.findByRole("menu", { name: "Export notes" });
     expect(within(menu).getByRole("menuitem", {
@@ -594,7 +595,7 @@ describe("Yonalist v2 desktop shell", () => {
       name: "Actions for 2 selected notes"
     })).toBeVisible();
     const multiSelectionExport = await screen.findByRole("button", {
-      name: "Export"
+      name: "Export as"
     });
     fireEvent.click(multiSelectionExport);
     menu = await screen.findByRole("menu", { name: "Export notes" });
@@ -619,7 +620,11 @@ describe("Yonalist v2 desktop shell", () => {
     // keeps state -- at the right, in front of Online.
     await within(statusBar).findByText("2 selected");
     expect([...statusBar.querySelector(".statusbar-actions")!.children]
-      .map((child) => child.textContent)).toEqual(["2 selected", "Online"]);
+      .map((child) => child.textContent)).toEqual([
+      "2 selected",
+      "100%",
+      "Online"
+    ]);
     expect(statusBar.querySelector(".statusbar-feedback")).toBeEmptyDOMElement();
   });
 
@@ -725,6 +730,56 @@ describe("Yonalist v2 desktop shell", () => {
         collapsed: false
       }
     }));
+  });
+
+  it("folds and unfolds a subtree via keyboard shortcuts", async () => {
+    const parent = { ...snapshot.viewport!.nodes[0], collapsed: false };
+    const child = {
+      ...snapshot.viewport!.nodes[1],
+      id: "child",
+      parentId: parent.id,
+      text: "Nested child",
+      sortKey: 1024
+    };
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [parent, child, snapshot.viewport!.nodes[1]]
+      }
+    });
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
+      revision: 8,
+      changedNodes: [{
+        ...parent,
+        collapsed: envelope.command.kind === "setCollapsed"
+          ? envelope.command.collapsed
+          : parent.collapsed
+      }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }));
+    render(<App api={notesApi} />);
+
+    const editor = await screen.findByDisplayValue("First thought") as HTMLTextAreaElement;
+    act(() => {
+      editor.focus();
+      editor.setSelectionRange(0, 0);
+    });
+
+    // Press Cmd+Up / Ctrl+Up to collapse
+    fireEvent.keyDown(editor, { key: "ArrowUp", ctrlKey: true });
+
+    await waitFor(() => {
+      expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
+        command: {
+          kind: "setCollapsed",
+          id: "bullet-1",
+          collapsed: true
+        }
+      }));
+    });
   });
 
   it("opens, edits, and flushes a supporting note with Shift+Enter", async () => {
@@ -1485,7 +1540,18 @@ describe("Yonalist v2 desktop shell", () => {
     render(<App api={notesApi} />);
     await screen.findByDisplayValue("First thought");
 
-    fireEvent.click(screen.getByRole("button", { name: "Completed items" }));
+    const completedButton = screen.getByRole("button", { name: "Completed items" });
+    expect(completedButton).toHaveAttribute("data-tooltip", "Hide completed items");
+    expect(completedButton).toHaveAttribute("data-tooltip-align", "right");
+    expect(completedButton).not.toHaveAttribute("title");
+    expect(completedButton).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(completedButton);
+
+    expect(completedButton).toHaveAttribute("data-tooltip", "Show completed items");
+    expect(completedButton).toHaveAttribute("data-tooltip-align", "right");
+    expect(completedButton).not.toHaveAttribute("title");
+    expect(completedButton).toHaveAttribute("aria-pressed", "false");
 
     expect(screen.queryByDisplayValue("First thought")).toBeNull();
     expect(screen.getAllByRole("group", { name: "Note text" }).some(
@@ -1738,8 +1804,10 @@ describe("Yonalist v2 desktop shell", () => {
     await screen.findByDisplayValue("First thought");
 
     expect(crumbLabels()).toEqual(["", "Today"]);
-    expect(within(breadcrumb()).getByRole("button", { name: "All pages" }))
-      .toBeEnabled();
+    const allPagesButton = within(breadcrumb()).getByRole("button", { name: "All pages" });
+    expect(allPagesButton).toBeEnabled();
+    expect(allPagesButton).toHaveAttribute("data-tooltip", "All pages");
+    expect(allPagesButton).not.toHaveAttribute("title");
     const page = within(breadcrumb()).getByRole("button", { name: "Today" });
     expect(page).toHaveAttribute("aria-current", "page");
     expect(page).toBeDisabled();
@@ -1880,4 +1948,47 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
+  it("renders page zoom stepper in status bar and supports zoom in, zoom out, reset, and keyboard shortcuts", async () => {
+    render(<App api={api()} />);
+    await screen.findByDisplayValue("First thought");
+
+    const zoomGroup = screen.getByRole("group", { name: "Page zoom" });
+    expect(zoomGroup).toBeVisible();
+
+    const zoomOutBtn = within(zoomGroup).getByRole("button", { name: "Zoom out" });
+    const zoomLabel = within(zoomGroup).getByRole("button", { name: /^Zoom level 100%/ });
+    const zoomInBtn = within(zoomGroup).getByRole("button", { name: "Zoom in" });
+
+    expect(zoomOutBtn).toHaveAttribute("data-tooltip", "Zoom out");
+    expect(zoomInBtn).toHaveAttribute("data-tooltip", "Zoom in");
+    expect(zoomLabel).toHaveTextContent("100%");
+    expect(zoomLabel).toBeDisabled();
+
+    // Click Zoom In
+    fireEvent.click(zoomInBtn);
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("105%");
+      expect(zoomLabel).not.toBeDisabled();
+      expect(zoomLabel).toHaveAttribute("data-tooltip", "Reset zoom to 100%");
+    });
+
+    // Click Zoom Label to Reset
+    fireEvent.click(zoomLabel);
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("100%");
+      expect(zoomLabel).toBeDisabled();
+      expect(zoomLabel).not.toHaveAttribute("data-tooltip");
+    });
+
+    // Keyboard shortcut Ctrl+= / Ctrl+- (or on mac Cmd+= / Cmd+-)
+    fireEvent.keyDown(window, { key: "=", ctrlKey: true });
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("105%");
+    });
+
+    fireEvent.keyDown(window, { key: "-", ctrlKey: true });
+    await waitFor(() => {
+      expect(zoomLabel).toHaveTextContent("100%");
+    });
+  });
 });

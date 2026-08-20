@@ -62,6 +62,14 @@ export function NotesExportMenu({
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (feedback?.kind !== "success") return;
+    const timer = setTimeout(() => {
+      setFeedback(null);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [feedback]);
+
   const run = async (
     attempt: ExportAttempt,
     overwrite = false
@@ -158,7 +166,9 @@ export function NotesExportMenu({
       <button
         className="notes-export-trigger"
         type="button"
-        aria-label="Export"
+        aria-label="Export as"
+        data-tooltip="Export as"
+        data-tooltip-align="right"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         data-popup-open={menuOpen ? "true" : undefined}
