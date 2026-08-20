@@ -85,11 +85,17 @@ export class StoreViewport {
         afterCursor: null,
         limit: VIEWPORT_LIMIT
       });
-      // A page the user left while this was in flight is not the page this
-      // answer describes — but whoever took the page over read it after the
-      // merge committed, so what is on screen is still the merged rows and the
-      // caller's revision is still theirs to claim.
-      if (sequence !== this.sequence) return true;
+      // Somebody else moved the sequence while this was in flight, and which
+      // one decides whether these rows still matter. A page taken over was
+      // read after the merge committed, so the screen holds the merged rows
+      // and the caller's revision is theirs to claim. Still the same page —
+      // more of it fetched below the fold, or a later re-read that will claim
+      // its own number — and the rows the reader is looking at are the ones
+      // from before the merge: claiming over them would pass their next edit
+      // and overwrite what the other device wrote.
+      if (sequence !== this.sequence) {
+        return this.getState().activePageId !== activePageId;
+      }
       this.apply(viewport, false);
       return true;
     } catch (cause) {

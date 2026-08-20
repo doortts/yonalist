@@ -1798,6 +1798,49 @@ describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
     expect(store.getSnapshot().revision).toBe(16);
   });
 
+  it("스크롤이 다시 읽기를 앞질러도 못 본 행 위로 리비전을 옮기지 않는다", async () => {
+    // 다음 화면을 더 읽어 오는 것은 페이지를 넘겨받는 것이 아니다. 머리쪽
+    // 행은 병합 전 그대로인데 리비전만 옮겨 주면, 그 행에 친 편집이 통과해서
+    // 다른 기기가 쓴 것을 덮는다.
+    const releases: Array<(page: ViewportPage) => void> = [];
+    const notes = api(async (request) => {
+      if (request.pageId === "root") {
+        return {
+          pageId: "root",
+          anchorId: null,
+          beforeCursor: null,
+          afterCursor: null,
+          nodes: [page("page-1", "Today")]
+        };
+      }
+      if (request.afterCursor) {
+        return {
+          pageId: "page-1",
+          anchorId: null,
+          beforeCursor: null,
+          afterCursor: null,
+          nodes: [bullet("three", 3072)]
+        };
+      }
+      return new Promise<ViewportPage>((resolve) => { releases.push(resolve); });
+    });
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    const wide = store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    await store.loadMore();
+    releases[0](boot.viewport as ViewportPage);
+    await wide;
+
+    expect(store.getSnapshot().revision).toBe(boot.revision);
+  });
+
   it("열린 페이지가 없으면 리비전만 옮긴다", async () => {
     // 화면에 행이 없으니 낡을 것도 없다. 여기서 번호를 붙들면 페이지를 여는
     // 첫 편집이 거부된다.
