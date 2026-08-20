@@ -2,6 +2,7 @@ import type { KeyboardEvent } from "react";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "../notesStore";
 import type { OutlineIndex } from "./outlineIndex";
+import { caretHandoff } from "./outlineCaretHandoff";
 import {
   focusAfterCommit,
   focusOutlineEditor
@@ -557,9 +558,20 @@ function executeRowIntent(
     case "cycleComplete":
       void store.cycleCompleted(node.id);
       return;
-    case "trash":
-      void store.deleteSubtree(node.id);
+    case "trash": {
+      // The surface the key came from unmounts with the row it takes, so the
+      // caret would be left on the document body. Its neighbour is read off the
+      // rows as they still stand and taken once the command lands -- the same
+      // shape the band's own delete and a cut row already use.
+      const takeCaret = caretHandoff({
+        nodes,
+        visibleNodes: context.visibleNodes,
+        outlineRootId: context.pageId,
+        scopeRef: { current: scope }
+      })([node.id]);
+      void store.deleteSubtree(node.id).then(takeCaret);
       return;
+    }
     // The chooser is mounted by the row and already scopes itself to the live
     // selection, so the key needs no diversion of its own: it flips the same
     // state the menu item flips.
