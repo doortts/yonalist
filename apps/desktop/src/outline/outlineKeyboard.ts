@@ -90,6 +90,10 @@ export type OutlineKeyIntent =
   | { readonly kind: "focusNote" }
   | { readonly kind: "copyImage" }
   | { readonly kind: "cutImage" }
+  // The caret's own row, subtree and all -- the same payload a one-row band
+  // writes, and the same one the row menu's Copy and Cut already take.
+  | { readonly kind: "copyRow" }
+  | { readonly kind: "cutRow" }
   /**
    * Puts the band's far end on `headId`. Naming the key's own row takes just
    * that row: with no band up yet, the sweep anchors where it starts.
@@ -379,6 +383,22 @@ export function resolveOutlineKey(
             end: input.value.length,
             direction: "forward"
           };
+    }
+    // Nothing selected anywhere: the chord takes the caret's own row, the way
+    // the row menu's Copy and Cut do. A swept span keeps the textarea's native
+    // copy, and a live band keeps the section's own clipboard event.
+    const clipboardKey = input.key.toLowerCase();
+    if (
+      (clipboardKey === "c" || clipboardKey === "x") &&
+      !input.shiftKey &&
+      !input.altKey &&
+      primaryModifier(input) &&
+      !input.hasSelection &&
+      validSelection(input) &&
+      input.selectionStart === input.selectionEnd
+    ) {
+      if (input.repeat) return { kind: "consume" };
+      return { kind: clipboardKey === "c" ? "copyRow" : "cutRow" };
     }
     const duplicateModifier = input.platform === "mac"
       ? input.metaKey && !input.altKey && !input.ctrlKey

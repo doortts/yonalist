@@ -87,6 +87,9 @@ interface OutlineRowKeyContext {
 export interface OutlineRowKeyOptions extends OutlineRowKeyContext {
   readonly event: KeyboardEvent<HTMLTextAreaElement>;
   readonly supportingNote: string;
+  /** Clipboard for a bullet row with nothing selected in it or around it. */
+  readonly onCopyRow: (nodeId: string) => void;
+  readonly onCutRow: (nodeId: string) => void;
 }
 
 export interface ImageRowKeyOptions extends OutlineRowKeyContext {
@@ -192,6 +195,10 @@ export function handleOutlineKeyDown(options: OutlineRowKeyOptions) {
       onClearSelection();
     }
   }
+  // The resolver holds these back while a band is up, so the caret's own row is
+  // the only thing they can mean here.
+  if (intent.kind === "copyRow") return options.onCopyRow(node.id);
+  if (intent.kind === "cutRow") return options.onCutRow(node.id);
   executeRowIntent(intent, scope, options, backspaceGroup, event.repeat);
 }
 
@@ -414,6 +421,9 @@ function executeRowIntent(
     // Only the image surface resolves these, and it routes them itself.
     case "copyImage":
     case "cutImage":
+    // Only a bullet row resolves these, and it routes them before this call.
+    case "copyRow":
+    case "cutRow":
     // Only a text field resolves this one, and it answers before it gets here.
     case "selectTextEdge":
       return;

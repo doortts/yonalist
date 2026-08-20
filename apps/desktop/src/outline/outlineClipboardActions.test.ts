@@ -46,6 +46,8 @@ class FakeClipboardItem {
 
 const SHOT = picture("shot", 2_048);
 const BULLET = bullet("bullet-1", 1_024);
+/** A child of the bullet, so a copy off that row has a subtree to carry. */
+const KID = bullet("kid", 1_024, "bullet-1");
 /** A caption under the picture that no clipboard payload can carry. */
 const OVERSIZED_CAPTION = {
   ...bullet("caption", 1_024, "shot"),
@@ -312,6 +314,137 @@ describe("outline clipboard actions", () => {
     expect(bench.write).not.toHaveBeenCalled();
     expect(bench.deleteSubtrees).not.toHaveBeenCalled();
     expect(bench.feedback).toEqual([CUT_OVER_CLIPBOARD_BOUNDS]);
+  });
+
+  it("copies a caret row's subtree without a selection", async () => {
+    const bench = harness({ nodes: [BULLET, KID, SHOT] });
+
+    bench.actions.copyRow("bullet-1");
+
+    // The write leaves inside the keydown that asked for it: WebKit refuses one
+    // that starts any later, so the count is read before anything is awaited.
+    expect(bench.write).toHaveBeenCalledTimes(1);
+    expect(bench.copyToSystem).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([]);
+    await bench.settle();
+    await expect((await bench.written()["text/plain"]).text())
+      .resolves.toContain("kid");
+    expect(bench.feedback).toEqual(["Copied selected outline."]);
+  });
+
+  it("names the outline when a caret row copy cannot write", async () => {
+    const bench = harness({
+      nodes: [BULLET, KID, SHOT],
+      write: vi.fn().mockRejectedValue(new Error("denied"))
+    });
+
+    bench.actions.copyRow("bullet-1");
+    await bench.settle();
+
+    expect(bench.deleteSubtrees).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([
+      "Could not write the selected outline to the clipboard."
+    ]);
+  });
+
+  it("names the outline when a caret row outruns the format on copy", async () => {
+    const bench = harness({
+      nodes: [BULLET, { ...OVERSIZED_CAPTION, parentId: "bullet-1" }]
+    });
+
+    bench.actions.copyRow("bullet-1");
+    await bench.settle();
+
+    expect(bench.write).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([
+      "Could not write the selected outline to the clipboard."
+    ]);
+  });
+
+  it("refuses a caret row cut while the outline window is partial", async () => {
+    const bench = harness({ structuralContextComplete: false });
+
+    bench.actions.cutRow("bullet-1");
+    await bench.settle();
+
+    expect(bench.write).not.toHaveBeenCalled();
+    expect(bench.handOffCaret).not.toHaveBeenCalled();
+    expect(bench.deleteSubtrees).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([OUTLINE_WINDOW_INCOMPLETE]);
+  });
+
+  it("refuses a caret row cut whose subtree outruns the format", async () => {
+    const bench = harness({
+      nodes: [BULLET, { ...OVERSIZED_CAPTION, parentId: "bullet-1" }]
+    });
+
+    bench.actions.cutRow("bullet-1");
+    await bench.settle();
+
+    expect(bench.write).not.toHaveBeenCalled();
+    expect(bench.deleteSubtrees).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([CUT_OVER_CLIPBOARD_BOUNDS]);
+  });
+
+  it("keeps the caret row when its cut write rejects", async () => {
+    const bench = harness({
+      write: vi.fn().mockRejectedValue(new Error("denied"))
+    });
+
+    bench.actions.cutRow("bullet-1");
+    await bench.settle();
+
+    expect(bench.deleteSubtrees).not.toHaveBeenCalled();
+    expect(bench.takeCaret).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([
+      "Could not write the selected outline to the clipboard."
+    ]);
+  });
+
+  it("cuts a caret row and hands the caret on after the delete", async () => {
+    const bench = harness({ nodes: [BULLET, KID, SHOT] });
+
+    bench.actions.cutRow("bullet-1");
+
+    // The caret destination is read off the rows as they still stand, and the
+    // write leaves inside the keydown -- both before anything is awaited.
+    expect(bench.handOffCaret).toHaveBeenCalledWith(["bullet-1"]);
+    expect(bench.write).toHaveBeenCalledTimes(1);
+    expect(bench.deleteSubtrees).not.toHaveBeenCalled();
+    // Captured before the delete, but taken after it: a caret sent to the
+    // destination while the row still stands lands on the row being removed.
+    expect(bench.takeCaret).not.toHaveBeenCalled();
+    await bench.settle();
+    expect(bench.deleteSubtrees).toHaveBeenCalledWith(["bullet-1"]);
+    expect(bench.clearSelection).toHaveBeenCalled();
+    expect(bench.takeCaret).toHaveBeenCalled();
+    expect(bench.feedback).toEqual(["Cut selected outline."]);
+  });
+
+  it("blames the delete but keeps the copy when a caret row will not go", async () => {
+    const bench = harness();
+    bench.deleteSubtrees.mockRejectedValue(new Error("gone"));
+
+    bench.actions.cutRow("bullet-1");
+    await bench.settle();
+
+    expect(bench.write).toHaveBeenCalledTimes(1);
+    expect(bench.takeCaret).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([
+      "Copied, but couldn't remove the selected outline."
+    ]);
+  });
+
+  it("says nothing when the caret row is already gone", async () => {
+    const bench = harness();
+
+    bench.actions.copyRow("vanished");
+    bench.actions.cutRow("vanished");
+    await bench.settle();
+
+    expect(bench.write).not.toHaveBeenCalled();
+    expect(bench.deleteSubtrees).not.toHaveBeenCalled();
+    expect(bench.feedback).toEqual([]);
   });
 
   it("keeps an image row whose cut could not reach the clipboard", async () => {

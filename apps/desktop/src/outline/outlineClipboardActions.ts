@@ -2,7 +2,7 @@ import type { NoteView } from "../../../../packages/contracts/generated/NoteView
 import { writeImageClipboard } from "../image/imageClipboard";
 import {
   buildOutlineClipboardFormats, CUT_OVER_CLIPBOARD_BOUNDS,
-  OUTLINE_WINDOW_INCOMPLETE
+  OUTLINE_WINDOW_INCOMPLETE, writeOutlineClipboard
 } from "./outlineClipboard";
 import type { OutlineClipboardSource } from "./outlineClipboard";
 
@@ -114,6 +114,57 @@ export function outlineClipboardActions({
       setSelectionFeedback("Copied, but couldn't remove the selected outline.");
     }
   };
+  // The caret's own row when nothing is selected: the same subtree serializer a
+  // one-row band runs, plus the caret handoff and the feedback line the row
+  // menu's Copy and Cut never had. The write starts inside the keydown for the
+  // same reason `putImageOnClipboard` does.
+  const copyRow = (nodeId: string) => {
+    // A row the sync or an undo took away between the render and the keydown
+    // asked for nothing, so it hears nothing -- the same silence `cutRow` and
+    // `putImageOnClipboard` keep for it.
+    if (!index.node(nodeId)) return;
+    const formats = buildOutlineClipboardFormats(store.getSnapshot(), [nodeId]);
+    // A copy asks for no window gate: it deletes nothing, so it loses nothing
+    // that was not already off screen. Only the size can turn it down.
+    if (!formats) return reportWriteFailure();
+    const written = writeOutlineClipboard(formats, false)
+      .then(() => true, () => false);
+    runExclusive(async () => {
+      if (!await written) return reportWriteFailure();
+      setSelectionFeedback("Copied selected outline.");
+    });
+  };
+  const cutRow = (nodeId: string) => {
+    if (!index.node(nodeId)) return;
+    // The same gate `cutImageNode` reads: the payload is built from the loaded
+    // window and the delete takes the whole subtree the server holds, so past
+    // the window those two disagree.
+    if (!structuralContextComplete) {
+      setSelectionFeedback(OUTLINE_WINDOW_INCOMPLETE);
+      return;
+    }
+    const formats = buildOutlineClipboardFormats(store.getSnapshot(), [nodeId]);
+    if (!formats) {
+      setSelectionFeedback(CUT_OVER_CLIPBOARD_BOUNDS);
+      return;
+    }
+    const takeCaret = handOffCaret([nodeId]);
+    const written = writeOutlineClipboard(formats, true)
+      .then(() => true, () => false);
+    runExclusive(async () => {
+      if (!await written) return reportWriteFailure();
+      try {
+        await store.deleteSubtrees([nodeId]);
+        clearSelection();
+        takeCaret();
+        setSelectionFeedback("Cut selected outline.");
+      } catch {
+        setSelectionFeedback(
+          "Copied, but couldn't remove the selected outline."
+        );
+      }
+    });
+  };
   // A bullet gets its copy and cut as clipboard events; WebKit sends none to an
   // image row, so its own keydown lands here with nothing selected. The write
   // leaves inside that keydown -- only what follows it waits on the guard.
@@ -166,6 +217,8 @@ export function outlineClipboardActions({
     selectedImage,
     copySelection,
     cutSelection,
+    copyRow,
+    cutRow,
     putImageOnClipboard,
     cutImageNode
   };

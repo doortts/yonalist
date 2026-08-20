@@ -98,6 +98,41 @@ function bandInput(overrides: Partial<OutlineKeyInput> = {}): OutlineKeyInput {
 }
 
 describe("v2 outline keyboard intent resolver", () => {
+  it("takes copy and cut off a caret-only bullet row", () => {
+    const caret = { selectionStart: 5, selectionEnd: 5 };
+    expect(resolveOutlineKey(input({
+      key: "c", ctrlKey: true, ...caret
+    }))).toEqual({ kind: "copyRow" });
+    expect(resolveOutlineKey(input({
+      key: "x", ctrlKey: true, ...caret
+    }))).toEqual({ kind: "cutRow" });
+    expect(resolveOutlineKey(input({
+      key: "c", metaKey: true, platform: "mac", ...caret
+    }))).toEqual({ kind: "copyRow" });
+    // A held chord runs once and never leaks to the native copy underneath.
+    expect(resolveOutlineKey(input({
+      key: "x", ctrlKey: true, repeat: true, ...caret
+    }))).toEqual({ kind: "consume" });
+    // Swept text, a live band, the shifted or alted chord, the other
+    // platform's modifier and the page title all leave the chord alone.
+    expect(resolveOutlineKey(input({ key: "c", ctrlKey: true }))).toBeNull();
+    expect(resolveOutlineKey(input({
+      key: "c", ctrlKey: true, hasSelection: true, ...caret
+    }))).toBeNull();
+    expect(resolveOutlineKey(input({
+      key: "c", ctrlKey: true, shiftKey: true, ...caret
+    }))).toBeNull();
+    expect(resolveOutlineKey(input({
+      key: "c", ctrlKey: true, altKey: true, ...caret
+    }))).toBeNull();
+    expect(resolveOutlineKey(input({
+      key: "c", metaKey: true, ...caret
+    }))).toBeNull();
+    expect(resolveOutlineKey(input({
+      key: "c", ctrlKey: true, target: "page", ...caret
+    }))).toBeNull();
+  });
+
   it("maps image primary-content keys without inventing a text caret", () => {
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",

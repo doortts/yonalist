@@ -329,8 +329,8 @@ export function NotesOutline({
     takeCaret();
   };
   const {
-    selectedImage, copySelection, cutSelection, putImageOnClipboard,
-    cutImageNode
+    selectedImage, copySelection, cutSelection, copyRow, cutRow,
+    putImageOnClipboard, cutImageNode
   } = outlineClipboardActions({
     store, selection, index, structuralContextComplete, setSelectionFeedback,
     runExclusive, clearSelection, deleteSelection, handOffCaret
@@ -406,6 +406,8 @@ export function NotesOutline({
       () => setSelectionFeedback("Copied image.")
     ),
     onCutImage: cutImageNode,
+    onCopyRow: copyRow,
+    onCutRow: cutRow,
     onPasteRefused: setSelectionFeedback,
     selectionActions: {
       indent: () => executeMovePlan(movePlans.indent),
