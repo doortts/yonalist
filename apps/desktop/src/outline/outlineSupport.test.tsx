@@ -171,6 +171,7 @@ describe("v2 outline row keys reach the collaborator they name", () => {
     fireEvent.keyDown(mountRow(given), { key: "c", ctrlKey: true });
 
     expect(given.onCopyRow).toHaveBeenCalledWith("beta");
+    expect(given.onCutRow).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the chords to the band and to swept text", () => {

@@ -303,11 +303,6 @@ describe("outline clipboard integration", () => {
   const CUT_OVER_BOUNDS =
     "Cut is unavailable because these rows are too large for the clipboard.";
 
-  // The forest is whole here, so the completeness gate lets the cut through --
-  // but a note past the format's own bound leaves nothing to delete against.
-  // A row menu reads the loaded window and deletes what the server holds. The
-  // forest behind some other selection says nothing about the row that was
-  // right-clicked, so the window itself is what has to be whole.
   /** A clipboard that takes every format, so only a guard can stop a write. */
   function workingClipboard() {
     const write = vi.fn().mockResolvedValue(undefined);
@@ -359,6 +354,9 @@ describe("outline clipboard integration", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  // A row menu reads the loaded window and deletes what the server holds. The
+  // forest behind some other selection says nothing about the row that was
+  // right-clicked, so the window itself is what has to be whole.
   it("refuses a row Cut while the outline is still paginated", async () => {
     const notesApi = api();
     notesApi.bootstrap = vi.fn().mockResolvedValue({
@@ -370,13 +368,7 @@ describe("outline clipboard integration", () => {
       .mockReturnValue(new Promise(() => undefined));
     // A working clipboard, so the refusal is the only thing that can stop the
     // delete: without one the write throws and nothing is deleted regardless.
-    vi.stubGlobal("ClipboardItem", class {
-      constructor(readonly data: Record<string, Promise<Blob>>) {}
-    });
-    Object.defineProperty(navigator, "clipboard", {
-      value: { write: vi.fn().mockResolvedValue(undefined) },
-      configurable: true
-    });
+    workingClipboard();
     render(<App api={notesApi} />);
     // One unrelated row selected, and its own forest comes back whole -- the
     // signal that used to let this Cut through.
@@ -403,6 +395,8 @@ describe("outline clipboard integration", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  // The forest is whole here, so the completeness gate lets the cut through --
+  // but a note past the format's own bound leaves nothing to delete against.
   it("refuses destructive Cut when the rows outrun the clipboard format", async () => {
     const notesApi = api();
     await selectOversizedRow(notesApi);
