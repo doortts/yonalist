@@ -62,22 +62,20 @@ export function usePageZoom(): number {
 }
 
 /**
- * The webview's own page zoom, which leaves every length the outline measures in
- * CSS pixels -- a CSS `zoom` on an ancestor would not, and the row windowing
- * measures rows against the scroller they sit in. The webview module is loaded
- * on the way, the way the native drag-drop listener loads it: its bytes have no
- * business in the first load, and a chunk in front of a keypress is invisible.
+ * Page zoom is scoped to the notes outline / page view area via React state and CSS,
+ * so the webview itself remains at 1.0 to keep the sidebar, header, and status bar
+ * at standard 100% scale.
  */
 async function applyPercent(): Promise<void> {
   // The browser preview has the browser's own zoom, so there is nothing to do.
   if (!("__TAURI_INTERNALS__" in window)) return;
   const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-  await getCurrentWebview().setZoom(percent / 100);
+  await getCurrentWebview().setZoom(1.0);
 }
 
-/** Page zoom is a runtime setting, so the last size is put back at startup. */
+/** Page zoom is restored at startup. */
 export function restorePageZoom(): Promise<void> {
-  return percent === 100 ? Promise.resolve() : applyPercent();
+  return applyPercent();
 }
 
 /** Resets page zoom to 100%. */

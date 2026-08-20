@@ -1098,9 +1098,9 @@ body.is-resizing-pane {
   display: inline-flex;
   align-items: center;
   height: 20px;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.2));
   border-radius: var(--radius-sm);
-  background: var(--bg-hover);
+  background: transparent;
   overflow: visible;
 }
 

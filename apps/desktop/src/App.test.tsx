@@ -1959,10 +1959,17 @@ describe("Yonalist v2 desktop shell", () => {
     const zoomLabel = within(zoomGroup).getByRole("button", { name: /^Zoom level 100%/ });
     const zoomInBtn = within(zoomGroup).getByRole("button", { name: "Zoom in" });
 
+    const detailPane = document.querySelector(".notes-detail-pane")!;
+    const sidebar = screen.getByRole("navigation", { name: "Navigation" });
+    const statusBar = screen.getByRole("contentinfo", { name: "Status bar" });
+
     expect(zoomOutBtn).toHaveAttribute("data-tooltip", "Zoom out");
     expect(zoomInBtn).toHaveAttribute("data-tooltip", "Zoom in");
     expect(zoomLabel).toHaveTextContent("100%");
     expect(zoomLabel).toBeDisabled();
+    expect(detailPane).not.toHaveStyle({ zoom: "1.05" });
+    expect(sidebar).not.toHaveStyle({ zoom: "1.05" });
+    expect(statusBar).not.toHaveStyle({ zoom: "1.05" });
 
     // Click Zoom In
     fireEvent.click(zoomInBtn);
@@ -1970,6 +1977,9 @@ describe("Yonalist v2 desktop shell", () => {
       expect(zoomLabel).toHaveTextContent("105%");
       expect(zoomLabel).not.toBeDisabled();
       expect(zoomLabel).toHaveAttribute("data-tooltip", "Reset zoom to 100%");
+      expect(detailPane).toHaveStyle({ zoom: "1.05" });
+      expect(sidebar).not.toHaveStyle({ zoom: "1.05" });
+      expect(statusBar).not.toHaveStyle({ zoom: "1.05" });
     });
 
     // Click Zoom Label to Reset
@@ -1978,17 +1988,20 @@ describe("Yonalist v2 desktop shell", () => {
       expect(zoomLabel).toHaveTextContent("100%");
       expect(zoomLabel).toBeDisabled();
       expect(zoomLabel).not.toHaveAttribute("data-tooltip");
+      expect(detailPane).not.toHaveStyle({ zoom: "1.05" });
     });
 
     // Keyboard shortcut Ctrl+= / Ctrl+- (or on mac Cmd+= / Cmd+-)
     fireEvent.keyDown(window, { key: "=", ctrlKey: true });
     await waitFor(() => {
       expect(zoomLabel).toHaveTextContent("105%");
+      expect(detailPane).toHaveStyle({ zoom: "1.05" });
     });
 
     fireEvent.keyDown(window, { key: "-", ctrlKey: true });
     await waitFor(() => {
       expect(zoomLabel).toHaveTextContent("100%");
+      expect(detailPane).not.toHaveStyle({ zoom: "1.05" });
     });
   });
 });

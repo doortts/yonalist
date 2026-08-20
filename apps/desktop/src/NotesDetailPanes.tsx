@@ -7,6 +7,7 @@ import {
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import type { NotesShellSnapshot } from "./store/storeSubscriptions";
 import { useSplitResize } from "./useSplitResize";
+import { usePageZoom } from "./pageZoom";
 
 export interface NotesDetailPanesProps {
   readonly store: NotesStore;
@@ -51,6 +52,8 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onSelectionCountChange
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
+  const pageZoom = usePageZoom();
+  const paneZoomStyle: CSSProperties = pageZoom !== 100 ? { zoom: pageZoom / 100 } : {};
   return (
     <section className="detail-pane" aria-label="Detail">
       <div className="pane-titlebar-spacer" />
@@ -68,7 +71,10 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
         >
           <div
             className="notes-detail-pane"
-            style={{ overflowY: splitOpen ? "auto" : undefined }}
+            style={{
+              overflowY: splitOpen ? "auto" : undefined,
+              ...paneZoomStyle
+            }}
           >
             <NotesOutline
               store={store}
@@ -100,7 +106,13 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
                 onPointerDown={splitResize.onPointerDown}
                 onKeyDown={splitResize.onKeyDown}
               />
-              <div className="notes-detail-pane" style={{ overflowY: "auto" }}>
+              <div
+                className="notes-detail-pane"
+                style={{
+                  overflowY: "auto",
+                  ...paneZoomStyle
+                }}
+              >
                 <NotesOutline
                   store={store}
                   status={status}

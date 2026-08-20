@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yonalist - Page View Scoped Zoom Mockup</title>
+  <style>
+    :root[data-theme="dark"] {
+      --bg-app: #121418;
+      --bg-sidebar: #181a1f;
+      --bg-detail: #15171c;
+      --bg-card: #1c1f26;
+      --bg-hover: rgba(255, 255, 255, 0.08);
+      --bg-active: rgba(255, 255, 255, 0.15);
+      --border: #2c303a;
+      --border-strong: #3e4452;
+      --border-subtle: rgba(255, 255, 255, 0.1);
+      --text-1: #e7eaef;
+      --text-2: #a4acb9;
+      --text-3: #757f8e;
+      --accent: #539bf5;
+      --accent-soft: rgba(83, 155, 245, 0.15);
+      --success: #57ab5a;
+      --danger: #f47067;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    :root[data-theme="light"] {
+      --bg-app: #f0f2f5;
+      --bg-sidebar: #e9ecef;
+      --bg-detail: #ffffff;
+      --bg-card: #ffffff;
+      --bg-hover: rgba(17, 24, 39, 0.06);
+      --bg-active: rgba(17, 24, 39, 0.12);
+      --border: #dcdfe4;
+      --border-strong: #c2c7d0;
+      --border-subtle: rgba(0, 0, 0, 0.1);
+      --text-1: #1f2328;
+      --text-2: #59626e;
+      --text-3: #8c95a1;
+      --accent: #2563eb;
+      --accent-soft: rgba(37, 99, 235, 0.09);
+      --success: #2da44e;
+      --danger: #c2402a;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-app);
+      color: var(--text-1);
+      min-height: 100vh;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .header-bar {
+      width: 100%;
+      max-width: 1060px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+    }
+
+    .header-title h1 {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .header-title p {
+      font-size: 13px;
+      color: var(--text-2);
+      margin-top: 3px;
+    }
+
+    .theme-toggle-btn {
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    /* Controls Panel */
+    .controls-panel {
+      width: 100%;
+      max-width: 1060px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .control-label {
+      font-weight: 600;
+      color: var(--text-2);
+    }
+
+    .btn-chip {
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      color: var(--text-1);
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      transition: all 120ms ease;
+    }
+    .btn-chip:hover {
+      background: var(--bg-active);
+      border-color: var(--border-strong);
+    }
+    .btn-chip.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .zoom-slider-container {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .zoom-slider {
+      width: 130px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .zoom-val-badge {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      color: var(--accent);
+      min-width: 44px;
+    }
+
+    /* Option Tabs */
+    .option-tabs {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      width: 100%;
+      max-width: 1060px;
+    }
+    .tab-btn {
+      padding: 14px;
+      background: var(--bg-card);
+      border: 2px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-2);
+      cursor: pointer;
+      text-align: left;
+      transition: all 150ms ease;
+    }
+    .tab-btn:hover {
+      border-color: var(--border-strong);
+      color: var(--text-1);
+    }
+    .tab-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--text-1);
+    }
+    .tab-btn .badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-bottom: 6px;
+      background: var(--accent);
+      color: white;
+    }
+    .tab-btn .title {
+      font-weight: 650;
+      font-size: 14px;
+      display: block;
+      margin-bottom: 4px;
+    }
+    .tab-btn .desc {
+      font-size: 12px;
+      color: var(--text-3);
+      line-height: 1.4;
+    }
+
+    /* Info Bar */
+    .status-banner {
+      width: 100%;
+      max-width: 1060px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 16px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+    }
+    .status-badge.fixed {
+      color: var(--text-3);
+    }
+    .status-badge.zoomed {
+      color: var(--accent);
+    }
+
+    /* App Preview Container */
+    .app-preview-window {
+      width: 100%;
+      max-width: 1060px;
+      height: 520px;
+      background: var(--bg-app);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* App Main Layout */
+    .app-main-layout {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Sidebar (100% Fixed Scale) */
+    .app-sidebar {
+      width: 230px;
+      background: var(--bg-sidebar);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      gap: 6px;
+      flex-shrink: 0;
+      font-size: 13px;
+    }
+    .sidebar-header {
+      font-size: 14px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 6px 8px 6px;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 6px;
+    }
+    .sidebar-badge-fixed {
+      font-size: 10px;
+      color: var(--text-3);
+      background: var(--bg-hover);
+      padding: 2px 5px;
+      border-radius: 3px;
+    }
+    .sidebar-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      color: var(--text-2);
+      cursor: pointer;
+    }
+    .sidebar-item:hover {
+      background: var(--bg-hover);
+      color: var(--text-1);
+    }
+    .sidebar-item.active {
+      background: var(--bg-hover);
+      color: var(--text-1);
+      font-weight: 600;
+    }
+
+    /* Detail Section */
+    .app-detail-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-detail);
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Outline Header (Breadcrumb & Top Toolbar - 100% Fixed Scale) */
+    .outline-header {
+      height: 42px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      background: var(--bg-detail);
+      flex-shrink: 0;
+      font-size: 13px;
+    }
+    .breadcrumb-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      border: none;
+      background: transparent;
+      color: var(--text-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .icon-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-1);
+    }
+
+    /* Notes Outline Body (Zoom Target) */
+    .notes-outline-viewport {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 36px;
+      background: var(--bg-detail);
+      /* Base font size scales dynamically with zoom */
+      font-size: 14px;
+      transition: font-size 80ms ease;
+    }
+
+    .zoom-boundary-box {
+      border: 2px dashed var(--accent);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      margin: -12px;
+      position: relative;
+    }
+    .zoom-boundary-tag {
+      position: absolute;
+      top: -10px;
+      right: 12px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 3px;
+      pointer-events: none;
+    }
+
+    .note-page-title {
+      font-weight: 750;
+      font-size: 1.75em;
+      margin-bottom: 16px;
+      line-height: 1.25;
+      color: var(--text-1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .note-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 1em;
+      line-height: 1.55;
+    }
+    .note-bullet {
+      width: 0.45em;
+      height: 0.45em;
+      border-radius: 50%;
+      background: var(--text-3);
+      display: inline-block;
+      flex-shrink: 0;
+      align-self: center;
+    }
+    .note-checkbox {
+      width: 1em;
+      height: 1em;
+      border: 1.5px solid var(--text-3);
+      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      align-self: center;
+      color: transparent;
+      cursor: pointer;
+    }
+    .note-checkbox.checked {
+      background: var(--success);
+      border-color: var(--success);
+      color: white;
+    }
+    .note-text {
+      color: var(--text-1);
+      outline: none;
+    }
+    .note-text.done {
+      color: var(--text-3);
+      text-decoration: line-through;
+    }
+    .note-tag {
+      background: var(--accent-soft);
+      color: var(--accent);
+      padding: 0.1em 0.5em;
+      border-radius: 3px;
+      font-size: 0.85em;
+      font-weight: 500;
+    }
+    .indent-1 { margin-left: 1.6em; }
+    .indent-2 { margin-left: 3.2em; }
+
+    /* Bottom Status Bar (100% Fixed Scale) */
+    .app-statusbar {
+      height: 30px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-detail);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 12px;
+      color: var(--text-3);
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .statusbar-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 500;
+    }
+    .statusbar-state {
+      color: var(--text-3);
+      font-weight: 600;
+      padding-left: 8px;
+    }
+
+    /* Stepper */
+    .statusbar-zoom-control {
+      display: inline-flex;
+      align-items: center;
+      height: 20px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--bg-hover);
+    }
+    .statusbar-zoom-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 100%;
+      padding: 0;
+      border: none;
+      background: transparent;
+      color: var(--text-2);
+      cursor: pointer;
+    }
+    .statusbar-zoom-btn:hover:not(:disabled) {
+      background: var(--bg-active);
+      color: var(--text-1);
+    }
+    .statusbar-zoom-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      padding: 0 5px;
+      border: none;
+      background: transparent;
+      color: var(--text-1);
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      cursor: pointer;
+    }
+    .statusbar-zoom-label:not(:disabled):hover {
+      background: var(--bg-active);
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header-bar">
+    <div class="header-title">
+      <h1>Yonalist 페이지 뷰 전용 Zoom 시안 (인터랙티브)</h1>
+      <p>사이드바, 상단 툴바, 하단 상태바는 <strong>100% 고정</strong>되며, <strong>노트 본문 영역만 확대/축소</strong>됩니다.</p>
+    </div>
+    <button class="theme-toggle-btn" id="theme-toggle-btn">🌙 다크 모드 전환</button>
+  </header>
+
+  <!-- Controls -->
+  <div class="controls-panel">
+    <div class="control-group">
+      <span class="control-label">🔍 Zoom 레벨:</span>
+      <button class="btn-chip" data-zoom="80">80%</button>
+      <button class="btn-chip" data-zoom="90">90%</button>
+      <button class="btn-chip" data-zoom="100">100% (기본)</button>
+      <button class="btn-chip active" data-zoom="125">125%</button>
+      <button class="btn-chip" data-zoom="150">150%</button>
+      <button class="btn-chip" data-zoom="175">175%</button>
+    </div>
+
+    <div class="zoom-slider-container">
+      <span class="control-label">미세 조절:</span>
+      <input type="range" id="zoom-slider" class="zoom-slider" min="50" max="250" step="5" value="125">
+      <span class="zoom-val-badge" id="zoom-val-badge">125%</span>
+    </div>
+
+    <div class="control-group">
+      <button class="btn-chip active" id="guide-toggle-btn">🎯 줌 영역 테두리 표시 (ON)</button>
+    </div>
+  </div>
+
+  <!-- Mode Selector Tabs -->
+  <div class="option-tabs">
+    <button class="tab-btn active" id="tab-mode-page">
+      <span class="badge">추천 시안 (요청하신 방식)</span>
+      <span class="title">1. 페이지 뷰(노트 본문)만 Zoom 적용</span>
+      <span class="desc">사이드바, 툴바, 상태바는 100% 선명하게 고정. 노트 타이틀, 텍스트, 불릿, 체크박스만 자연스럽게 확대/축소됩니다.</span>
+    </button>
+    <button class="tab-btn" id="tab-mode-full">
+      <span class="badge">비교용 (기존 방식)</span>
+      <span class="title">2. 전체 창 Webview Zoom (기존)</span>
+      <span class="desc">사이드바, 메뉴 버튼, 상태바, 툴팁까지 창 전체가 돋보기로 보듯 함께 커집니다.</span>
+    </button>
+  </div>
+
+  <!-- Status Info Banner -->
+  <div class="status-banner">
+    <div>
+      <span class="status-badge fixed">🔒 사이드바: 100% 고정</span> &nbsp;·&nbsp;
+      <span class="status-badge fixed">🔒 상단 툴바 / 하단 상태바: 100% 고정</span> &nbsp;·&nbsp;
+      <span class="status-badge zoomed" id="status-zoom-text">🎯 본문 아웃라인 영역: 125% 줌 적용</span>
+    </div>
+    <div style="font-size: 12px; color: var(--text-3);">
+      키보드 단축키 <code>⌘+</code> / <code>⌘-</code> 지원
+    </div>
+  </div>
+
+  <!-- Simulated Desktop Window -->
+  <div class="app-preview-window" id="app-window">
+    <div class="app-main-layout">
+      <!-- Left Sidebar (Always 100% fixed) -->
+      <aside class="app-sidebar" id="app-sidebar">
+        <div class="sidebar-header">
+          <span>Yonalist</span>
+          <span class="sidebar-badge-fixed">고정 100%</span>
+        </div>
+        <div class="sidebar-item active">
+          <span>🏠 All pages</span>
+        </div>
+        <div class="sidebar-item">
+          <span>📄 Product Roadmap</span>
+        </div>
+        <div class="sidebar-item">
+          <span>📄 Daily Log</span>
+        </div>
+        <div class="sidebar-item">
+          <span>📄 Meeting Notes</span>
+        </div>
+        <div class="sidebar-item">
+          <span>⚙️ Settings</span>
+        </div>
+      </aside>
+
+      <!-- Right Detail Section -->
+      <section class="app-detail-section" id="app-detail">
+        <!-- Top Toolbar Header (100% fixed) -->
+        <header class="outline-header" id="outline-header">
+          <div class="breadcrumb-row">
+            <span>🏠 All</span>
+            <span style="color:var(--text-3)">/</span>
+            <span style="font-weight:600">Product Roadmap</span>
+          </div>
+          <div class="header-actions">
+            <button class="icon-btn" title="Export as">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </button>
+            <button class="icon-btn" title="Hide completed items">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+            <button class="icon-btn" title="Maximize detail">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <!-- Notes Outline Viewport (The zoom target!) -->
+        <main class="notes-outline-viewport" id="notes-viewport">
+          <div class="zoom-boundary-box" id="zoom-boundary-box">
+            <span class="zoom-boundary-tag" id="zoom-boundary-tag">ZOOM TARGET (125%)</span>
+
+            <div class="note-page-title">
+              <span>Product Roadmap</span>
+              <span class="note-tag">#2026-Q3</span>
+            </div>
+            <div class="note-row">
+              <span class="note-bullet"></span>
+              <span class="note-text" contenteditable="true">페이지 뷰 전용 Zoom 레벨 기능 지원</span>
+            </div>
+            <div class="note-row indent-1">
+              <span class="note-checkbox checked">✓</span>
+              <span class="note-text done" contenteditable="true">하단 상태바에 영구 스텝 컨트롤러 배치</span>
+            </div>
+            <div class="note-row indent-1">
+              <span class="note-checkbox"></span>
+              <span class="note-text" contenteditable="true">노트 본문(아웃라인) 영역만 확대/축소 적용</span>
+            </div>
+            <div class="note-row indent-2">
+              <span class="note-bullet"></span>
+              <span class="note-text" contenteditable="true">사이드바 및 상단 바는 100% 고정 크기 유지</span>
+            </div>
+            <div class="note-row indent-2">
+              <span class="note-bullet"></span>
+              <span class="note-text" contenteditable="true">글꼴 크기, 불릿, 체크박스가 자연스럽게 비례 확대</span>
+            </div>
+            <div class="note-row">
+              <span class="note-bullet"></span>
+              <span class="note-text" contenteditable="true">직접 여기 텍스트를 클릭해서 편집해 볼 수 있습니다.</span>
+            </div>
+          </div>
+        </main>
+      </section>
+    </div>
+
+    <!-- Bottom Status Bar (100% fixed) -->
+    <footer class="app-statusbar" id="app-statusbar">
+      <div></div>
+      <div class="statusbar-actions">
+        <div class="statusbar-zoom-control" role="group" aria-label="Page zoom">
+          <button class="statusbar-zoom-btn" id="statusbar-minus-btn" title="Zoom out">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button class="statusbar-zoom-label" id="statusbar-label-btn" title="Reset zoom to 100%">125%</button>
+          <button class="statusbar-zoom-btn" id="statusbar-plus-btn" title="Zoom in">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+        <span class="statusbar-state">Online</span>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    let zoomLevel = 125;
+    let currentMode = 'page'; // 'page' | 'full'
+    let showGuide = true;
+    let isDark = true;
+
+    const baseFontSize = 14;
+
+    const appWindow = document.getElementById('app-window');
+    const notesViewport = document.getElementById('notes-viewport');
+    const boundaryBox = document.getElementById('zoom-boundary-box');
+    const boundaryTag = document.getElementById('zoom-boundary-tag');
+    const statusbarLabel = document.getElementById('statusbar-label-btn');
+    const zoomValBadge = document.getElementById('zoom-val-badge');
+    const zoomSlider = document.getElementById('zoom-slider');
+    const statusZoomText = document.getElementById('status-zoom-text');
+    const guideToggleBtn = document.getElementById('guide-toggle-btn');
+    const themeToggleBtn = document.getElementById('theme-toggle-btn');
+
+    function applyZoom() {
+      const scale = zoomLevel / 100;
+      
+      // Update displays
+      statusbarLabel.textContent = `${zoomLevel}%`;
+      zoomValBadge.textContent = `${zoomLevel}%`;
+      zoomSlider.value = zoomLevel;
+
+      // Update button active state
+      document.querySelectorAll('.control-group .btn-chip').forEach(btn => {
+        const val = Number(btn.getAttribute('data-zoom'));
+        btn.classList.toggle('active', val === zoomLevel);
+      });
+
+      if (currentMode === 'page') {
+        // Page view zoom: Scale ONLY the notes outline viewport font-size
+        appWindow.style.zoom = '1';
+        notesViewport.style.fontSize = `${baseFontSize * scale}px`;
+        
+        statusZoomText.innerHTML = `🎯 <strong>본문 아웃라인 영역만 ${zoomLevel}%</strong> 줌 적용 중 (사이드바/툴바 100% 고정)`;
+        
+        if (showGuide) {
+          boundaryBox.style.border = '2px dashed var(--accent)';
+          boundaryTag.style.display = 'block';
+          boundaryTag.textContent = `ZOOM TARGET (${zoomLevel}%)`;
+        } else {
+          boundaryBox.style.border = 'none';
+          boundaryTag.style.display = 'none';
+        }
+      } else {
+        // Full window zoom (Old way)
+        notesViewport.style.fontSize = `${baseFontSize}px`;
+        appWindow.style.zoom = `${scale}`;
+        
+        statusZoomText.innerHTML = `⚠️ <strong>전체 창(사이드바, 툴바, 상태바 모두)이 ${zoomLevel}%</strong> 줌 적용 중`;
+        
+        if (showGuide) {
+          boundaryBox.style.border = '2px dashed var(--danger)';
+          boundaryTag.style.display = 'block';
+          boundaryTag.textContent = `WINDOW-WIDE ZOOM (${zoomLevel}%)`;
+        } else {
+          boundaryBox.style.border = 'none';
+          boundaryTag.style.display = 'none';
+        }
+      }
+    }
+
+    function setZoom(val) {
+      zoomLevel = Math.max(50, Math.min(250, val));
+      applyZoom();
+    }
+
+    function nudgeZoom(delta) {
+      setZoom(zoomLevel + delta);
+    }
+
+    // Event listeners
+    document.querySelectorAll('.control-group .btn-chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const val = Number(btn.getAttribute('data-zoom'));
+        if (!isNaN(val)) setZoom(val);
+      });
+    });
+
+    zoomSlider.addEventListener('input', (e) => {
+      setZoom(Number(e.target.value));
+    });
+
+    document.getElementById('statusbar-minus-btn').addEventListener('click', () => nudgeZoom(-5));
+    document.getElementById('statusbar-plus-btn').addEventListener('click', () => nudgeZoom(5));
+    document.getElementById('statusbar-label-btn').addEventListener('click', () => setZoom(100));
+
+    document.getElementById('tab-mode-page').addEventListener('click', () => {
+      currentMode = 'page';
+      document.getElementById('tab-mode-page').classList.add('active');
+      document.getElementById('tab-mode-full').classList.remove('active');
+      applyZoom();
+    });
+
+    document.getElementById('tab-mode-full').addEventListener('click', () => {
+      currentMode = 'full';
+      document.getElementById('tab-mode-full').classList.add('active');
+      document.getElementById('tab-mode-page').classList.remove('active');
+      applyZoom();
+    });
+
+    guideToggleBtn.addEventListener('click', () => {
+      showGuide = !showGuide;
+      guideToggleBtn.textContent = showGuide ? '🎯 줌 영역 테두리 표시 (ON)' : '🎯 줌 영역 테두리 표시 (OFF)';
+      guideToggleBtn.classList.toggle('active', showGuide);
+      applyZoom();
+    });
+
+    themeToggleBtn.addEventListener('click', () => {
+      isDark = !isDark;
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      themeToggleBtn.textContent = isDark ? '🌙 다크 모드 전환' : '☀️ 라이트 모드 전환';
+    });
+
+    // Keyboard shortcuts (Cmd+= / Cmd+-)
+    window.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        nudgeZoom(5);
+      } else if ((e.metaKey || e.ctrlKey) && (e.key === '-' || e.key === '_')) {
+        e.preventDefault();
+        nudgeZoom(-5);
+      }
+    });
+
+    // Checkbox toggle
+    document.querySelectorAll('.note-checkbox').forEach(cb => {
+      cb.addEventListener('click', () => {
+        cb.classList.toggle('checked');
+        const text = cb.nextElementSibling;
+        if (text) text.classList.toggle('done');
+        cb.textContent = cb.classList.contains('checked') ? '✓' : '';
+      });
+    });
+
+    // Initial render
+    applyZoom();
+  </script>
+</body>
+</html>
