@@ -41,8 +41,13 @@ describe("outline indentation guides", () => {
     );
     // The band starts just before the bullet rather than at the indent origin,
     // so the menu and chevron columns stay unpainted. Off the bullets' own
-    // offset, so both layouts follow from the one term.
-    expect(row).toContain("var(--notes-bullet-center-offset) - 10px");
+    // offset, so both layouts follow from the one term. Asserted across the
+    // line break the formatter puts here, since the sign is the whole claim:
+    // subtracting the offset instead would move the edge a bullet column left
+    // of where it was, which is the defect inverted rather than fixed.
+    expect(row).toContain(
+      "var(--notes-outline-indent) +\nvar(--notes-bullet-center-offset) - 10px"
+    );
     expect(row).toContain("var(--notes-band-indent) 0,");
     expect(row).toContain("calc(100% - var(--notes-band-indent)) 100%,");
     expect(row).toContain("--notes-band-paint: transparent;");
