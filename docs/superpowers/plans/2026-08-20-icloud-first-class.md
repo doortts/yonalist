@@ -40,16 +40,16 @@ benefit. It gets its own contract when the dataless work is in.
 
 Detection needs no new dependency: `SF_DATALESS` (`0x40000000`) in `st_flags`,
 reachable from `std::os::macos::fs::MetadataExt::st_flags` (probed on this
-machine). Reading a dataless file materializes it, which is how it comes back
-— that is the whole reason the export can hand the job to the watcher instead
-of calling a download API.
+machine). Reading a dataless file materializes it, which is how it comes back —
+that is why no download API is needed here, and, as the amendment below records,
+why the flag must never be allowed to skip a read.
 
 ## Contract
 
 | Field | Content |
 | --- | --- |
-| Goal | An iCloud vault whose files have been evicted converges without producing bounced copies: the export never writes over a file whose bytes are not local, and the watcher treats such a file as "not arrived yet" rather than reading it as content. Plus: this device keeps one identity across a database reset. |
-| Acceptance | A1: `intake`'s not-yet-arrived verdict is reached for a dataless file, whatever its apparent size, and a zero-byte file keeps its current verdict. A2: `write_checked` does not write over an existing dataless file; it reports `needs_merge` so the pass retries, and the file's own bytes are never replaced. A3: on a healthy (materialized) vault every existing export and merge behavior is byte-for-byte unchanged. A4: `ensure_device_id` derives its four hex characters from this machine rather than from a random UUID, so two databases provisioned on one Mac agree; a database that already holds an id keeps it. |
+| Goal | An iCloud vault whose files have been evicted converges without producing bounced copies: an evicted file is fetched by being read, and no write ever lands on one whose bytes could not be fetched. Plus: this device keeps one identity across a database reset. |
+| Acceptance | A1: reading is what fetches an evicted file, so a dataless file is read rather than refused; a zero-byte file keeps its current not-yet-arrived verdict. A2: `write_checked` does not write over a file whose read **failed** and whose flag says its bytes are elsewhere; it reports `needs_merge` so the pass retries. A3: on a healthy (materialized) vault every existing export and merge behavior is byte-for-byte unchanged, and so is every other failed-read case — too large, a link, a fifo, missing. A4: `ensure_device_id` derives its four hex characters from this machine rather than from a random UUID, so two databases provisioned on one Mac agree; a database that already holds an id keeps it. |
 | Non-goals | No `NSFileCoordinator`/`NSFilePresenter` (own contract, later). No `startDownloadingUbiquitousItem` — reading materializes, and the watcher already reads. No pinning files as downloaded (no third-party API exists). No `.nosync` (undocumented, and reported to get folders deleted). No write-frequency change. No schema change, no migration. No Finder-localized copy names. |
 | Boundaries | Rust: `crates/notes-sync` (`intake.rs`, `export.rs`, `hlc.rs`, `file_io.rs` if the probe lands there), `crates/notes-sqlite` (`worker.rs::ensure_device_id`). macOS-only code is `cfg`-gated with a non-macOS fallback so the workspace still builds and tests elsewhere. No IPC, no frontend, no SQLite schema. |
 | Manual proof | Cannot be forced on demand — eviction needs Optimize Mac Storage and iCloud's own timing, and this machine currently holds no dataless file (`ls -lO` shows no flags). Proof is therefore: unit coverage over the flag predicate, plus a live check that the healthy vault keeps exporting and merging normally after the change, plus the device id staying equal across two freshly provisioned databases. |
@@ -57,6 +57,16 @@ of calling a download API.
 ## Items
 
 One commit each, test first, red evidence recorded verbatim.
+
+> **Amended after review.** Items 1 and 2 below were first written as "refuse a
+> dataless file before reading it". That was wrong in a way worth recording,
+> because the wrong version is the intuitive one: reading a dataless file is the
+> only thing in this app that *fetches* it, so refusing it everywhere left
+> nothing to bring the bytes down. An evicted note's edits could then never reach
+> the vault — a silent stall, traded for a visible duplicate. The shipped rule is
+> **read first; consult the flag only when the read failed**, which is the
+> offline case and the only one where the file is both in the way and unfetched.
+> `2a871f61`/`028131ba` implement the original wording; `b8066dd9` corrects it.
 
 ### Item 1 — a dataless file is a file whose bytes have not arrived
 
@@ -68,8 +78,9 @@ where it asks about zero length today:
 if facts.len() == 0 { return Ok(Verdict::NotYetArrived); }
 ```
 
-becomes zero-length **or** dataless. Keep the existing zero-byte arm: it is
-what older macOS and other transports produce, and it costs nothing.
+was to become zero-length **or** dataless. The amendment above overrules that:
+the zero-byte arm stays exactly as it is — older macOS and other transports
+produce it — and a dataless file falls through to the read on purpose.
 
 macOS: `use std::os::macos::fs::MetadataExt; metadata.st_flags() & 0x4000_0000 != 0`.
 Name the constant `SF_DATALESS` with a comment saying it is `sys/stat.h`'s
@@ -88,8 +99,9 @@ test — say so in a comment on the test rather than faking a flag.
 
 `crates/notes-sync/src/export.rs::write_checked`. Today the existing file is
 read to compare hashes, and an unreadable read falls through to the write.
-Add, before that read: if the path exists and its metadata says dataless,
-return `ExportOutcome { written: false, needs_merge: true, path }`.
+Add, **after** a read that failed: if the path's metadata says dataless, return
+`ExportOutcome { written: false, needs_merge: true, path }`. Before the read was
+the original wording, and the amendment above says why it is wrong.
 
 `needs_merge` is the right existing signal — it already means "there is
 something at that path this app must not replace, and the merge sees it
@@ -142,8 +154,12 @@ Frontend gates skipped; no frontend file changes.
 - The dataless predicate is untestable in its true state. Mitigated by keeping
   it to one flag comparison over metadata the caller already holds, so the
   part that cannot be tested is as small as a line can be.
-- Item 2 makes a document wait a pass when its file is evicted. That is the
-  intended trade: a delayed write against a bounced duplicate.
+- Item 2 makes a document wait when its file is evicted **and** this device
+  cannot fetch it — offline, or a fetch that gave up. Online it converges in the
+  same pass, because the read is the fetch. The waiting costs one blocking fetch
+  attempt per evicted file per export pass, which is a fileproviderd timeout
+  each time; accepted rather than cached, since a cache would have to guess when
+  the network came back.
 - A device that reinstalls macOS keeps its id where it used to get a new one.
   That is the goal, but it means an id now outlives a full data reset — worth
   saying in the settings screen eventually, not in this slice.

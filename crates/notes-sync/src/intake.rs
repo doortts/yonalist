@@ -49,9 +49,8 @@ pub fn flags_say_dataless(st_flags: u32) -> bool {
     st_flags & SF_DATALESS != 0
 }
 
-/// Whether this file's bytes have not been brought down yet. Asked of metadata
-/// the caller already holds: `stat`-ing again would materialise any dataless
-/// folder on the way there, which is the cost this is trying to avoid.
+/// Whether this file's bytes have not been brought down yet. Only worth asking
+/// once a read has already failed: a read that succeeds is what fetches them.
 #[cfg(target_os = "macos")]
 pub(crate) fn is_dataless(facts: &std::fs::Metadata) -> bool {
     use std::os::macos::fs::MetadataExt;
