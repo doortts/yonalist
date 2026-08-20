@@ -141,7 +141,7 @@ fn a_merge_through_the_worker_bumps_the_revision_once() {
     let before = storage.revision().expect("revision");
 
     let outcome = storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("merge");
 
     assert!(outcome.applied > 0);
@@ -170,7 +170,7 @@ fn a_commit_with_the_pre_merge_revision_is_rejected() {
     let patch = tree.plan(command.clone()).expect("plan");
 
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("merge");
 
     let refused = storage.commit(stale, &patch);
@@ -185,10 +185,14 @@ fn a_commit_with_the_pre_merge_revision_is_rejected() {
 fn an_identical_merge_replay_keeps_the_revision() {
     let (_directory, storage) = storage();
     let file = page("Thought", &stamp(5));
-    storage.merge_document(&file, &input()).expect("first");
+    storage
+        .merge_document(&file, &input(), None)
+        .expect("first");
     let after_first = storage.revision().expect("revision");
 
-    let outcome = storage.merge_document(&file, &input()).expect("replay");
+    let outcome = storage
+        .merge_document(&file, &input(), None)
+        .expect("replay");
 
     assert_eq!(outcome.applied, 0, "a replay is not a write");
     assert_eq!(
@@ -222,7 +226,9 @@ fn a_merge_leaves_the_derived_paths_correct() {
         writer: None,
     });
 
-    storage.merge_document(&file, &input()).expect("merge");
+    storage
+        .merge_document(&file, &input(), None)
+        .expect("merge");
 
     let path = storage
         .node_path(child_id)
@@ -254,7 +260,7 @@ fn a_local_move_survives_an_unrelated_merge() {
         node(third, &seeded, "Three"),
     ];
     let file = VaultFile::Page(document.clone());
-    storage.merge_document(&file, &input()).expect("seed");
+    storage.merge_document(&file, &input(), None).expect("seed");
 
     // The app moves `second` in front of `first`, the way a drag does.
     let command = NotesCommand::MoveNode {
@@ -284,7 +290,7 @@ fn a_local_move_survives_an_unrelated_merge() {
     news.nodes[2] = edited;
     news.max_hlc = stamp(9);
     storage
-        .merge_document(&VaultFile::Page(news), &input())
+        .merge_document(&VaultFile::Page(news), &input(), None)
         .expect("merge");
 
     assert_eq!(
@@ -317,10 +323,10 @@ fn order_of_children(storage: &SqliteStorage, parent: &str) -> Vec<String> {
 fn conflicts_page_returns_both_sides_of_each_defeat() {
     let (directory, storage) = storage();
     storage
-        .merge_document(&page("Winner", &stamp(9)), &input())
+        .merge_document(&page("Winner", &stamp(9)), &input(), None)
         .expect("seed");
     storage
-        .merge_document(&page("Loser", &stamp(5)), &input())
+        .merge_document(&page("Loser", &stamp(5)), &input(), None)
         .expect("stale");
     // The name a merge would have learned from the file that lost.
     beside(&directory)
@@ -358,10 +364,10 @@ fn conflicts_page_returns_both_sides_of_each_defeat() {
 fn an_unnamed_device_is_reported_by_its_id() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("Winner", &stamp(9)), &input())
+        .merge_document(&page("Winner", &stamp(9)), &input(), None)
         .expect("seed");
     storage
-        .merge_document(&page("Loser", &stamp(5)), &input())
+        .merge_document(&page("Loser", &stamp(5)), &input(), None)
         .expect("stale");
 
     let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
@@ -376,10 +382,10 @@ fn an_unnamed_device_is_reported_by_its_id() {
 fn the_side_this_device_wrote_says_so() {
     let (directory, storage) = storage();
     storage
-        .merge_document(&page("Winner", &stamp(9)), &input())
+        .merge_document(&page("Winner", &stamp(9)), &input(), None)
         .expect("seed");
     storage
-        .merge_document(&page("Loser", &stamp(5)), &input())
+        .merge_document(&page("Loser", &stamp(5)), &input(), None)
         .expect("stale");
     let beside = beside(&directory);
     let here: String = beside
@@ -413,10 +419,10 @@ fn the_side_this_device_wrote_says_so() {
 fn a_recorded_defeat_can_be_read_back_for_restoring() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("Winner", &stamp(9)), &input())
+        .merge_document(&page("Winner", &stamp(9)), &input(), None)
         .expect("seed");
     storage
-        .merge_document(&page("Loser", &stamp(5)), &input())
+        .merge_document(&page("Loser", &stamp(5)), &input(), None)
         .expect("stale");
     let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
 
@@ -438,11 +444,15 @@ fn a_recorded_defeat_can_be_read_back_for_restoring() {
 fn the_log_is_pruned_past_its_retention_count() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("Winner", &stamp(4000)), &input())
+        .merge_document(&page("Winner", &stamp(4000)), &input(), None)
         .expect("seed");
     for millis in 1..1_100u64 {
         storage
-            .merge_document(&page(&format!("Loser {millis}"), &stamp(millis)), &input())
+            .merge_document(
+                &page(&format!("Loser {millis}"), &stamp(millis)),
+                &input(),
+                None,
+            )
             .expect("stale");
     }
 
@@ -466,10 +476,10 @@ fn the_log_is_pruned_past_its_retention_age() {
     let path = directory.path().join("notes.sqlite");
     let storage = SqliteStorage::open(&path).expect("open");
     storage
-        .merge_document(&page("Winner", &stamp(9)), &input())
+        .merge_document(&page("Winner", &stamp(9)), &input(), None)
         .expect("seed");
     storage
-        .merge_document(&page("Loser", &stamp(5)), &input())
+        .merge_document(&page("Loser", &stamp(5)), &input(), None)
         .expect("stale");
     // Six months pass, as far as the log is concerned. A second connection is
     // the honest way to say that here: nothing in the app moves a clock, and
@@ -483,7 +493,7 @@ fn the_log_is_pruned_past_its_retention_age() {
         .expect("age");
 
     storage
-        .merge_document(&page("Loser again", &stamp(6)), &input())
+        .merge_document(&page("Loser again", &stamp(6)), &input(), None)
         .expect("stale");
 
     let kept = storage.sync_conflicts(10).expect("conflicts");
@@ -508,7 +518,7 @@ fn a_text_edit_leaves_the_place_claim_where_it_was() {
     };
     document.nodes = vec![node(first, &seeded, "One"), node(second, &seeded, "Two")];
     storage
-        .merge_document(&VaultFile::Page(document), &input())
+        .merge_document(&VaultFile::Page(document), &input(), None)
         .expect("seed");
     let before = claim_of(&storage, second);
 
@@ -548,7 +558,7 @@ fn adopting_only_a_place_still_counts_as_a_write() {
     };
     document.nodes = vec![node(first, &seeded, "One"), node(second, &seeded, "Two")];
     storage
-        .merge_document(&VaultFile::Page(document.clone()), &input())
+        .merge_document(&VaultFile::Page(document.clone()), &input(), None)
         .expect("seed");
     let revision = storage.revision().expect("revision");
 
@@ -559,7 +569,7 @@ fn adopting_only_a_place_still_counts_as_a_write() {
     moved.nodes[1].place = Some((String::new(), at.clone()));
     moved.nodes[0].place = Some((second.to_owned(), at.clone()));
     let outcome = storage
-        .merge_document(&VaultFile::Page(moved), &input())
+        .merge_document(&VaultFile::Page(moved), &input(), None)
         .expect("merge");
 
     assert!(
@@ -580,7 +590,7 @@ fn an_export_through_the_worker_writes_the_vault_without_moving_the_revision() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     // A merge leaves nothing waiting — it adopted what another device already
     // wrote. A local edit is what puts a document in the queue.
@@ -620,7 +630,7 @@ fn an_export_with_nothing_waiting_writes_nothing() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     storage
         .export_pending(vault.path(), &store())
@@ -653,7 +663,9 @@ fn a_hand_edited_file_gets_its_canonical_form_back() {
     let parsed = notes_sync::parse::parse(by_hand.as_bytes()).expect("parse");
     let mut input = input();
     input.file_hash = notes_sync::export::hash_bytes(by_hand.as_bytes());
-    let outcome = storage.merge_document(&parsed, &input).expect("merge");
+    let outcome = storage
+        .merge_document(&parsed, &input, None)
+        .expect("merge");
     assert!(
         outcome.needs_write_back,
         "the file is missing the id it was given"
@@ -680,7 +692,7 @@ fn a_restored_node_takes_the_trash_file_with_it() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
     let trash = vault.path().join(".yonalist").join("trash.md");
@@ -732,6 +744,7 @@ fn a_placeholder_row_does_not_stop_the_export() {
                 nodes: vec![gone],
             }),
             &trash_input,
+            None,
         )
         .expect("trash");
     // A deletion made here is what puts the trash in the queue, so the trash
@@ -785,7 +798,7 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
     let storage = SqliteStorage::open(&path).expect("open");
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     let command = NotesCommand::UpdateText {
         id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
@@ -838,7 +851,7 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
 fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input(), None)
         .expect("merge");
     let waiting: String = storage
         .image_hash(IMAGE_NODE_ID)
@@ -876,7 +889,7 @@ fn an_arriving_attachment_leaves_a_row_the_trash_holds_unnamed() {
     const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
     let (directory, storage) = storage();
     storage
-        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input(), None)
         .expect("merge");
     run(
         &storage,
@@ -918,7 +931,11 @@ fn an_arriving_attachment_leaves_a_row_the_trash_holds_unnamed() {
 fn an_arriving_attachment_names_the_live_row_and_not_its_trashed_twin() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page_with_twin_images("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(
+            &page_with_twin_images("holiday-9f2c1b7a4e6d.png"),
+            &input(),
+            None,
+        )
         .expect("merge");
     run(
         &storage,
@@ -955,7 +972,7 @@ fn an_arriving_attachment_names_the_live_row_and_not_its_trashed_twin() {
 fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input(), None)
         .expect("the picture");
     storage
         .resolve_asset(
@@ -970,7 +987,7 @@ fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
     };
     document.nodes = vec![node(IMAGE_NODE_ID, &stamp(9), "just words")];
     storage
-        .merge_document(&VaultFile::Page(document), &input())
+        .merge_document(&VaultFile::Page(document), &input(), None)
         .expect("the hand edit");
     assert_eq!(
         storage
@@ -1008,7 +1025,11 @@ fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
 fn every_row_waiting_for_the_same_picture_is_named() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page_with_twin_images("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(
+            &page_with_twin_images("holiday-9f2c1b7a4e6d.png"),
+            &input(),
+            None,
+        )
         .expect("merge");
 
     let resolved = storage
@@ -1033,7 +1054,7 @@ fn every_row_waiting_for_the_same_picture_is_named() {
 fn bytes_that_do_not_match_the_name_resolve_nothing() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input(), None)
         .expect("merge");
 
     let resolved = storage
@@ -1064,7 +1085,7 @@ fn a_resolved_attachment_leaves_its_page_exportable() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input(), None)
         .expect("merge");
     storage
         .resolve_asset(
@@ -1213,7 +1234,7 @@ fn a_file_that_cannot_be_read_is_written_down() {
 fn a_document_that_becomes_unreadable_is_refused_only_once() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("merge");
 
     storage
@@ -1324,7 +1345,7 @@ fn a_file_that_becomes_readable_stops_being_refused() {
         .expect("quarantine");
 
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("merge");
 
     let still_refused: i64 = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
@@ -1349,7 +1370,7 @@ fn a_split_document_rides_through_an_export_untouched() {
     let (directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     let split = "Projects-PrJects00001/Deeper-Nd0000000001/README.md";
     let connection =
@@ -1445,7 +1466,7 @@ fn a_reindex_reports_what_it_could_not_read() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     storage
         .export_pending(vault.path(), &store())
@@ -1497,7 +1518,7 @@ fn reindex_is_refused_while_edits_are_unexported() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     let command = NotesCommand::UpdateText {
         id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
@@ -1540,7 +1561,7 @@ fn an_edited_split_document_survives_two_export_passes() {
     let (directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     let split = "Projects-PrJects00001/Deeper-Nd0000000001/README.md";
     let connection =
@@ -1603,7 +1624,7 @@ fn resolving_an_attachment_normalizes_the_row_and_bumps_the_revision() {
     const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
     let (directory, storage) = storage();
     storage
-        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input(), None)
         .expect("merge");
     let before = storage.revision().expect("revision");
 
@@ -1631,7 +1652,7 @@ fn resolving_an_attachment_normalizes_the_row_and_bumps_the_revision() {
 fn an_attachment_no_row_wanted_leaves_the_revision_alone() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input(), None)
         .expect("merge");
     let before = storage.revision().expect("revision");
 
@@ -1667,7 +1688,7 @@ fn a_restore_from_another_device_takes_the_trash_file_too() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
     let trash = vault.path().join(".yonalist").join("trash.md");
@@ -1681,7 +1702,7 @@ fn a_restore_from_another_device_takes_the_trash_file_too() {
     // far out is the only way to say that here: the deletion above carries a
     // real clock reading.
     storage
-        .merge_document(&page("Thought", &stamp(4_000_000_000_000)), &input())
+        .merge_document(&page("Thought", &stamp(4_000_000_000_000)), &input(), None)
         .expect("the restore arrives");
     storage
         .export_pending(vault.path(), &store())
@@ -1700,10 +1721,10 @@ fn a_restore_from_another_device_takes_the_trash_file_too() {
 fn a_recorded_defeat_can_be_dropped() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("Winner", &stamp(9)), &input())
+        .merge_document(&page("Winner", &stamp(9)), &input(), None)
         .expect("seed");
     storage
-        .merge_document(&page("Loser", &stamp(5)), &input())
+        .merge_document(&page("Loser", &stamp(5)), &input(), None)
         .expect("stale");
     let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
 
@@ -1729,10 +1750,10 @@ fn a_recorded_defeat_can_be_dropped() {
 fn dropping_a_defeat_that_is_already_gone_says_so() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("Winner", &stamp(9)), &input())
+        .merge_document(&page("Winner", &stamp(9)), &input(), None)
         .expect("seed");
     storage
-        .merge_document(&page("Loser", &stamp(5)), &input())
+        .merge_document(&page("Loser", &stamp(5)), &input(), None)
         .expect("stale");
     let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
     assert!(storage.forget_conflict(entry.seq).expect("drop"));
@@ -1749,7 +1770,7 @@ fn dropping_a_defeat_that_is_already_gone_says_so() {
 fn an_empty_bullet_taken_away_does_not_come_back_from_another_device() {
     let (_directory, storage) = storage();
     let file = page("", &stamp(5));
-    storage.merge_document(&file, &input()).expect("seed");
+    storage.merge_document(&file, &input(), None).expect("seed");
     let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
 
     run(&storage, NotesCommand::RemoveEmptyNode { id });
@@ -1760,7 +1781,9 @@ fn an_empty_bullet_taken_away_does_not_come_back_from_another_device() {
 
     // The other device has not read the deletion yet, so it writes the page it
     // still holds — the line included.
-    storage.merge_document(&file, &input()).expect("their copy");
+    storage
+        .merge_document(&file, &input(), None)
+        .expect("their copy");
 
     assert!(
         is_off_the_page(&storage, NODE_ID),
@@ -1776,7 +1799,7 @@ fn the_gesture_states_its_deletion_in_the_trash() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("", &stamp(5)), &input())
+        .merge_document(&page("", &stamp(5)), &input(), None)
         .expect("seed");
     let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
 
@@ -1800,7 +1823,7 @@ fn the_gesture_states_its_deletion_in_the_trash() {
 fn a_line_the_vault_never_saw_is_removed_without_a_word() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("seed");
     let blank = "Nd0000000009";
     run(
@@ -1832,7 +1855,7 @@ fn a_line_the_vault_never_saw_is_removed_without_a_word() {
 fn undoing_the_removal_of_a_stated_line_puts_it_back() {
     let (_directory, storage) = storage();
     storage
-        .merge_document(&page("", &stamp(5)), &input())
+        .merge_document(&page("", &stamp(5)), &input(), None)
         .expect("seed");
     let command = NotesCommand::RemoveEmptyNode {
         id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
@@ -1882,7 +1905,7 @@ fn a_reindex_counts_the_documents_it_read() {
     let storage = SqliteStorage::open(&path).expect("open");
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("merge");
     // A merge leaves nothing waiting; a local edit is what puts a document in the
     // queue and so gets the folder written.
@@ -1929,7 +1952,7 @@ fn a_rebuild_drops_what_the_vault_no_longer_states() {
     let storage = SqliteStorage::open(&path).expect("open");
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("merge");
     let command = NotesCommand::UpdateText {
         id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
@@ -2014,7 +2037,7 @@ fn a_refused_rebuild_leaves_every_row_where_it_was() {
     let storage = SqliteStorage::open(&path).expect("open");
     let vault = tempfile::tempdir().expect("vault");
     storage
-        .merge_document(&page("Thought", &stamp(5)), &input())
+        .merge_document(&page("Thought", &stamp(5)), &input(), None)
         .expect("merge");
     let command = NotesCommand::UpdateText {
         id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),

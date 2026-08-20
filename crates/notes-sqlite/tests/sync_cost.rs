@@ -107,7 +107,9 @@ impl Workspace {
             if let Ok(notes_sync::watcher::Verdict::Merge(file, input)) =
                 notes_sync::watcher::consider(&self.vault, &relative, recorded.as_deref())
             {
-                self.storage.merge_document(&file, &input).expect("merge");
+                self.storage
+                    .merge_document(&file, &input, None)
+                    .expect("merge");
                 merged += 1;
             }
         }
@@ -388,12 +390,12 @@ fn the_same_document_arriving_twice_is_applied_once() {
 
     let first = workspace
         .storage
-        .merge_document(&file, &input)
+        .merge_document(&file, &input, None)
         .expect("merge");
     let before = workspace.state();
     let again = workspace
         .storage
-        .merge_document(&file, &input)
+        .merge_document(&file, &input, None)
         .expect("merge again");
 
     assert_eq!(again.applied, 0, "{first:?} then {again:?}");

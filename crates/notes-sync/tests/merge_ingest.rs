@@ -162,7 +162,7 @@ fn a_canonical_document_merges_into_an_empty_database() {
     ));
     let transaction = connection.transaction().expect("begin");
 
-    let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("merge");
+    let outcome = merge_document(&transaction, &clock(), &file, &input(), None).expect("merge");
 
     assert!(outcome.applied > 0);
     assert_eq!(text_of(&transaction, NODE_ID).as_deref(), Some("Thought"));
@@ -186,6 +186,7 @@ fn a_node_missing_from_the_file_is_never_deleted() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("first");
 
@@ -194,6 +195,7 @@ fn a_node_missing_from_the_file_is_never_deleted() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(6, "a3f2"))),
         &input(),
+        None,
     )
     .expect("second");
 
@@ -220,6 +222,7 @@ fn a_newer_file_wins_and_an_older_one_loses() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -231,6 +234,7 @@ fn a_newer_file_wins_and_an_older_one_loses() {
             &stamp(9, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("newer");
     assert_eq!(text_of(&transaction, NODE_ID).as_deref(), Some("Second"));
@@ -243,6 +247,7 @@ fn a_newer_file_wins_and_an_older_one_loses() {
             &stamp(7, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("older");
 
@@ -279,6 +284,7 @@ fn an_older_file_saying_the_same_thing_is_not_a_conflict() {
             &stamp(9, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -290,6 +296,7 @@ fn an_older_file_saying_the_same_thing_is_not_a_conflict() {
             &stamp(7, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("older");
 
@@ -316,6 +323,7 @@ fn an_older_file_saying_something_else_still_records_the_loss() {
             &stamp(9, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -327,6 +335,7 @@ fn an_older_file_saying_something_else_still_records_the_loss() {
             &stamp(7, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("older");
 
@@ -349,10 +358,10 @@ fn a_loser_is_recorded_once_in_the_conflict_log() {
         vec![node(NODE_ID, &stamp(7, "a3f2"), "Loser")],
         &stamp(7, "a3f2"),
     ));
-    merge_document(&transaction, &clock(), &winner, &input()).expect("seed");
+    merge_document(&transaction, &clock(), &winner, &input(), None).expect("seed");
 
-    merge_document(&transaction, &clock(), &loser, &input()).expect("first");
-    merge_document(&transaction, &clock(), &loser, &input()).expect("replay");
+    merge_document(&transaction, &clock(), &loser, &input(), None).expect("first");
+    merge_document(&transaction, &clock(), &loser, &input(), None).expect("replay");
     assert_eq!(
         conflicts_for(&transaction, NODE_ID),
         1,
@@ -370,9 +379,10 @@ fn a_loser_is_recorded_once_in_the_conflict_log() {
             &stamp(11, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("advance");
-    merge_document(&transaction, &clock(), &loser, &input()).expect("third");
+    merge_document(&transaction, &clock(), &loser, &input(), None).expect("third");
 
     assert_eq!(conflicts_for(&transaction, NODE_ID), 1);
 }
@@ -394,6 +404,7 @@ fn an_unstamped_bullet_gets_a_fresh_yid_and_stamp() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -431,6 +442,7 @@ fn a_merged_stamp_survives_the_stamping_triggers() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -455,6 +467,7 @@ fn unknown_extras_are_upserted_with_the_node() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![carrier], &stamp(5, "a3f2"))),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -487,6 +500,7 @@ fn a_future_hlc_beyond_drift_is_restamped_and_logged() {
             &far,
         )),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -518,6 +532,7 @@ fn a_drifted_hlc_is_not_observed() {
             &far,
         )),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -540,10 +555,10 @@ fn a_drift_replay_before_write_back_is_quiet() {
         vec![node(NODE_ID, &far, "From a broken clock")],
         &far,
     ));
-    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
     let after_first = hlc_of(&transaction, NODE_ID);
 
-    merge_document(&transaction, &clock(), &file, &input()).expect("replay");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("replay");
 
     assert_eq!(
         hlc_of(&transaction, NODE_ID),
@@ -565,6 +580,7 @@ fn a_dirty_local_loser_is_logged_before_it_is_overwritten() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
     transaction
@@ -582,6 +598,7 @@ fn a_dirty_local_loser_is_logged_before_it_is_overwritten() {
             &stamp(9, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("remote");
 
@@ -601,9 +618,9 @@ fn merging_the_same_document_twice_changes_nothing() {
         vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
         &stamp(5, "a3f2"),
     ));
-    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
 
-    let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
+    let outcome = merge_document(&transaction, &clock(), &file, &input(), None).expect("replay");
 
     assert_eq!(outcome.applied, 0, "a replay is not a write");
     assert_eq!(conflicts(&transaction), 0);
@@ -625,6 +642,7 @@ fn a_local_hand_edit_is_restamped_as_authoring() {
             &mine,
         )),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -636,6 +654,7 @@ fn a_local_hand_edit_is_restamped_as_authoring() {
             &mine,
         )),
         &input(),
+        None,
     )
     .expect("hand edit");
 
@@ -673,6 +692,7 @@ fn a_remote_same_hlc_conflict_breaks_ties_by_content_hash() {
                     &theirs,
                 )),
                 &input(),
+                None,
             )
             .expect("merge");
         }
@@ -713,6 +733,7 @@ fn a_reorder_touches_only_the_moved_sibling() {
         &clock(),
         &ordered([NODE_ID, second_id, third_id], &stamp(5, "a3f2")),
         &input(),
+        None,
     )
     .expect("seed");
     let untouched_first = hlc_of(&transaction, NODE_ID);
@@ -733,6 +754,7 @@ fn a_reorder_touches_only_the_moved_sibling() {
         &clock(),
         &notes_sync::document::VaultFile::Page(moved),
         &input(),
+        None,
     )
     .expect("reorder");
 
@@ -786,16 +808,16 @@ fn a_page_document_does_not_claim_a_position() {
     let transaction = connection.transaction().expect("begin");
     let first = notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, DEVICE)));
     let second = notes_sync::document::VaultFile::Page(second_page());
-    merge_document(&transaction, &clock(), &first, &input()).expect("first");
+    merge_document(&transaction, &clock(), &first, &input(), None).expect("first");
     let mut elsewhere = input();
     elsewhere.file_path = "Second-Mnutes000001/README.md".to_owned();
-    merge_document(&transaction, &clock(), &second, &elsewhere).expect("second");
+    merge_document(&transaction, &clock(), &second, &elsewhere, None).expect("second");
     let ordered = order_of_pages(&transaction);
     let stamps: Vec<String> = ordered.iter().map(|_| String::new()).collect::<Vec<_>>();
     let _ = stamps;
 
     let before = hlc_of(&transaction, PAGE_ID);
-    let outcome = merge_document(&transaction, &clock(), &first, &input()).expect("replay");
+    let outcome = merge_document(&transaction, &clock(), &first, &input(), None).expect("replay");
 
     assert_eq!(
         order_of_pages(&transaction),
@@ -837,9 +859,9 @@ fn an_image_node_keeps_its_metadata_and_settles() {
         vec![picture(NODE_ID, &stamp(5, DEVICE))],
         &stamp(5, DEVICE),
     ));
-    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
 
-    let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
+    let outcome = merge_document(&transaction, &clock(), &file, &input(), None).expect("replay");
 
     assert_eq!(outcome.applied, 0, "the same image file is not a new edit");
     assert_eq!(conflicts_for(&transaction, NODE_ID), 0);
@@ -866,13 +888,13 @@ fn a_line_that_stops_being_a_picture_takes_its_image_row_with_it() {
         vec![picture(NODE_ID, &stamp(5, DEVICE))],
         &stamp(5, DEVICE),
     ));
-    merge_document(&transaction, &clock(), &picture_file, &input()).expect("the picture");
+    merge_document(&transaction, &clock(), &picture_file, &input(), None).expect("the picture");
 
     let text_file = notes_sync::document::VaultFile::Page(page(
         vec![node(NODE_ID, &stamp(9, DEVICE), "just words")],
         &stamp(9, DEVICE),
     ));
-    merge_document(&transaction, &clock(), &text_file, &input()).expect("the hand edit");
+    merge_document(&transaction, &clock(), &text_file, &input(), None).expect("the hand edit");
 
     let kind: String = transaction
         .query_row(
@@ -907,6 +929,7 @@ fn a_drifted_file_logs_the_row_it_overwrote() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
     let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
@@ -921,6 +944,7 @@ fn a_drifted_file_logs_the_row_it_overwrote() {
             &far,
         )),
         &input(),
+        None,
     )
     .expect("drift");
 
@@ -958,6 +982,7 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
             &seeded,
         )),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -975,6 +1000,7 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
         &clock(),
         &notes_sync::document::VaultFile::Page(moved),
         &input(),
+        None,
     )
     .expect("reorder");
 
@@ -1026,6 +1052,7 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
         &clock(),
         &order([first, a, b, last], first, 5),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -1049,6 +1076,7 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
             &clock(),
             &order(arrangement, mover, 10 + round),
             &input(),
+            None,
         )
         .expect("move");
     }
@@ -1135,6 +1163,7 @@ fn deletion_needs_trash_evidence() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
     assert_eq!(deleted_flag(&transaction, NODE_ID), 0);
@@ -1146,6 +1175,7 @@ fn deletion_needs_trash_evidence() {
         &clock(),
         &trash(vec![gone], &stamp(9, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1165,6 +1195,7 @@ fn a_deletion_and_an_edit_compete_by_hlc() {
         &clock(),
         &trash(vec![gone], &stamp(5, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1177,6 +1208,7 @@ fn a_deletion_and_an_edit_compete_by_hlc() {
             &stamp(9, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("edit");
 
@@ -1209,6 +1241,7 @@ fn restoring_from_trash_puts_the_node_back_where_it_was() {
         &clock(),
         &trash(vec![gone], &stamp(5, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1240,6 +1273,7 @@ fn a_trash_child_takes_its_place_from_its_line() {
         &clock(),
         &trash(vec![parent], &stamp(5, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1270,6 +1304,7 @@ fn a_trash_root_whose_parent_is_unknown_gets_a_placeholder() {
         &clock(),
         &trash(vec![gone], &stamp(5, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1289,9 +1324,10 @@ fn merging_the_same_trash_twice_changes_nothing() {
     let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
     gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     let file = trash(vec![gone], &stamp(5, "a3f2"));
-    merge_document(&transaction, &clock(), &file, &trash_input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &trash_input(), None).expect("first");
 
-    let outcome = merge_document(&transaction, &clock(), &file, &trash_input()).expect("replay");
+    let outcome =
+        merge_document(&transaction, &clock(), &file, &trash_input(), None).expect("replay");
 
     assert_eq!(outcome.applied, 0);
     assert_eq!(conflicts(&transaction), 0);
@@ -1318,6 +1354,7 @@ fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
             &base,
         )),
         &input(),
+        None,
     )
     .expect("seed");
     let mut gone = node(NODE_ID, &stamp(20, "a3f2"), "Thought");
@@ -1327,6 +1364,7 @@ fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
         &clock(),
         &trash(vec![gone], &stamp(20, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1350,6 +1388,7 @@ fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
         &clock(),
         &notes_sync::document::VaultFile::Page(reordered),
         &input(),
+        None,
     )
     .expect("reorder");
 
@@ -1401,6 +1440,7 @@ fn a_claim_from_the_trash_on_a_row_that_outlived_it_is_named_as_changed() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(20, "a3f2"))),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -1422,6 +1462,7 @@ fn a_claim_from_the_trash_on_a_row_that_outlived_it_is_named_as_changed() {
         &clock(),
         &trash(vec![gone], &stamp(30, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1483,6 +1524,7 @@ fn a_cycle_parks_the_same_node_for_the_same_input() {
                 &seeded,
             )),
             &input(),
+            None,
         )
         .expect("seed");
         let pairs = if rotation {
@@ -1511,6 +1553,7 @@ fn a_cycle_parks_the_same_node_for_the_same_input() {
             &clock(),
             &notes_sync::document::VaultFile::Page(page(Vec::new(), &seeded)),
             &input(),
+            None,
         )
         .expect("merge");
 
@@ -1556,6 +1599,7 @@ fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
             &seeded,
         )),
         &input(),
+        None,
     )
     .expect("seed");
     transaction
@@ -1572,6 +1616,7 @@ fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
             &seeded,
         )),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -1598,6 +1643,7 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![node(parent, &seeded, "")], &seeded)),
         &input(),
+        None,
     )
     .expect("seed");
     // A note with no words yet is an ordinary state — a row somebody just
@@ -1632,6 +1678,7 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
             file_path: ".yonalist/trash.md".to_owned(),
             ..input()
         },
+        None,
     )
     .expect("merge the trash");
 
@@ -1679,7 +1726,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
             vec![node("Nd0000000001", &seeded, "First")],
             &seeded,
         ));
-        merge_document(&transaction, &clock(), &file, &input()).expect("the page");
+        merge_document(&transaction, &clock(), &file, &input(), None).expect("the page");
 
         let outcome = merge_document(
             &transaction,
@@ -1690,6 +1737,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
                 file_hash: "b".repeat(64),
                 ..input()
             },
+            None,
         )
         .expect("the copy");
 
@@ -1710,6 +1758,170 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
              again for ever"
         );
     }
+}
+
+/// The name patterns only know the copies this app has met. A duplicate under
+/// any other name — Finder's localised one, somebody's hand copy, a sync client
+/// nobody here has seen — holds the same document id, and adopting its path
+/// sends every later export into the copy while the file every device reads
+/// goes stale. What guards the path is the identity: the recorded file is
+/// standing, so this arrival is a copy of it whatever it is called.
+#[test]
+fn a_copy_under_an_unknown_name_does_not_take_the_documents_path() {
+    let vault = tempfile::tempdir().expect("vault");
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    let file =
+        notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &seeded, "First")], &seeded));
+    merge_document(&transaction, &clock(), &file, &input(), Some(vault.path())).expect("the page");
+    // The question is about the folder, not the row: the record has to point at
+    // a file that is really there.
+    place(vault.path(), &input().file_path);
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &file,
+        &MergeInput {
+            file_path: "Projects-PrJects00001/README 복사본.md".to_owned(),
+            file_hash: "b".repeat(64),
+            ..input()
+        },
+        Some(vault.path()),
+    )
+    .expect("the copy");
+
+    assert_eq!(
+        recorded_path(&transaction, PAGE_ID),
+        "Projects-PrJects00001/README.md",
+        "the page keeps its own file against a copy no pattern knows"
+    );
+    assert_eq!(
+        recorded_hash(&transaction, PAGE_ID),
+        "a".repeat(64),
+        "and the export still compares against that file's bytes"
+    );
+    assert!(
+        !outcome.retire_file,
+        "the copy stays: a name no pattern knows might be somebody's own backup, \
+         and removing it would be taking the user's file"
+    );
+}
+
+/// The other side of the same question, and the reason it is asked of the
+/// folder rather than of the name: a person moving a page's folder is an
+/// arrival of the same document at a new path, with nothing standing at the
+/// old one. That has always been adopted and has to stay adopted.
+#[test]
+fn a_move_is_adopted_when_the_recorded_file_is_gone() {
+    let vault = tempfile::tempdir().expect("vault");
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    let file =
+        notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &seeded, "First")], &seeded));
+    merge_document(&transaction, &clock(), &file, &input(), Some(vault.path())).expect("the page");
+    place(vault.path(), &input().file_path);
+    std::fs::remove_file(vault.path().join(input().file_path)).expect("the move");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &file,
+        &MergeInput {
+            file_path: "Archive/Projects-PrJects00001/README.md".to_owned(),
+            file_hash: "b".repeat(64),
+            ..input()
+        },
+        Some(vault.path()),
+    )
+    .expect("the move");
+
+    assert_eq!(
+        recorded_path(&transaction, PAGE_ID),
+        "Archive/Projects-PrJects00001/README.md",
+        "the document's file is where the person put it"
+    );
+}
+
+/// iCloud's numbered bounce arrives in whichever order the transport delivers
+/// it, and both orders have to end at the document's own file. The copy-first
+/// order converges through the export: `document_path` puts a copy-shaped
+/// basename back to `README.md`, and the record follows the write.
+#[test]
+fn either_order_of_an_icloud_duplicate_ends_on_the_documents_own_file() {
+    for order in [
+        ["Projects-PrJects00001/README 2.md", &input().file_path],
+        [&input().file_path, "Projects-PrJects00001/README 2.md"],
+    ] {
+        let vault = tempfile::tempdir().expect("vault");
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let seeded = stamp(5, "a3f2");
+        let file = notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &seeded, "First")],
+            &seeded,
+        ));
+        // The copy is the file the transport left behind; the document's own
+        // file is written by the export below.
+        place(vault.path(), "Projects-PrJects00001/README 2.md");
+        let mut retired = false;
+        for relative in order {
+            let outcome = merge_document(
+                &transaction,
+                &clock(),
+                &file,
+                &MergeInput {
+                    file_path: relative.to_string(),
+                    ..input()
+                },
+                Some(vault.path()),
+            )
+            .expect("the arrival");
+            retired |= outcome.retire_file;
+        }
+
+        notes_sync::export::export_document(&transaction, vault.path(), PAGE_ID).expect("export");
+
+        assert_eq!(
+            recorded_path(&transaction, PAGE_ID),
+            "Projects-PrJects00001/README.md",
+            "whichever of {order:?} arrived first"
+        );
+        assert!(
+            retired,
+            "and the numbered copy is handed back to be removed"
+        );
+    }
+}
+
+/// A file really there under the vault root, which is the whole of what the
+/// guard's question asks about.
+fn place(vault: &std::path::Path, relative: &str) {
+    let path = vault.join(relative);
+    std::fs::create_dir_all(path.parent().expect("a folder")).expect("the folder");
+    std::fs::write(&path, b"placed\n").expect("the file");
+}
+
+fn recorded_path(connection: &Connection, root_id: &str) -> String {
+    connection
+        .query_row(
+            "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
+            [root_id],
+            |row| row.get(0),
+        )
+        .expect("the document")
+}
+
+fn recorded_hash(connection: &Connection, root_id: &str) -> String {
+    connection
+        .query_row(
+            "SELECT exported_hash FROM sync_documents WHERE root_id = ?1",
+            [root_id],
+            |row| row.get(0),
+        )
+        .expect("the document")
 }
 
 /// What was last written for a node is only true until another device's
@@ -1733,6 +1945,7 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
             &seeded,
         )),
         &input(),
+        None,
     )
     .expect("seed");
     transaction
@@ -1756,6 +1969,7 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
             &stamp(9, "bbb2"),
         )),
         &input(),
+        None,
     )
     .expect("their version");
 
@@ -1794,6 +2008,7 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
             &seeded,
         )),
         &input(),
+        None,
     )
     .expect("seed");
     transaction
@@ -1813,6 +2028,7 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
             file_path: ".yonalist/trash (conflicted copy 2026-08-16).md".to_owned(),
             ..input()
         },
+        None,
     )
     .expect("the copy");
 
@@ -1846,6 +2062,7 @@ fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
             file_path: "Projects-PrJects00001/Deeper-Nd0000000001/README.md".to_owned(),
             ..input()
         },
+        None,
     )
     .expect("merge");
 
@@ -1880,6 +2097,7 @@ fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
             &seeded,
         )),
         &input(),
+        None,
     )
     .expect("seed");
     for (child, parent, mark) in [
@@ -1902,6 +2120,7 @@ fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(Vec::new(), &seeded)),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -1937,6 +2156,7 @@ fn an_orphaned_live_child_parks_on_the_recovery_page() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(5, "a3f2"))),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -1948,6 +2168,7 @@ fn an_orphaned_live_child_parks_on_the_recovery_page() {
         &clock(),
         &trash(vec![gone], &stamp(9, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
 
@@ -1982,6 +2203,7 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
             &clock(),
             &notes_sync::document::VaultFile::Page(page(vec![parent], &seeded)),
             &input(),
+            None,
         )
         .expect("seed");
 
@@ -1992,6 +2214,7 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
             &clock(),
             &trash(vec![gone], &stamp(9, "a3f2")),
             &trash_input(),
+            None,
         )
         .expect("trash");
 
@@ -2021,6 +2244,7 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![parent], &seeded)),
         &input(),
+        None,
     )
     .expect("seed");
     let mut gone = node(NODE_ID, &stamp(9, "a3f2"), "Parent");
@@ -2030,6 +2254,7 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
         &clock(),
         &trash(vec![gone], &stamp(9, "a3f2")),
         &trash_input(),
+        None,
     )
     .expect("trash");
     let recovery = recovery_page(&transaction).expect("a recovery page was made");
@@ -2068,6 +2293,7 @@ fn a_typed_line_does_not_unseat_the_sibling_after_it() {
             node(c, &mine, "C"),
         ]),
         &input(),
+        None,
     )
     .expect("seed");
     let before: Vec<String> = order_under(&transaction, PAGE_ID);
@@ -2082,6 +2308,7 @@ fn a_typed_line_does_not_unseat_the_sibling_after_it() {
             node(c, &mine, "C"),
         ]),
         &input(),
+        None,
     )
     .expect("typed");
 
@@ -2141,6 +2368,7 @@ fn a_new_page_lands_after_the_pages_already_there() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2"))),
         &input(),
+        None,
     )
     .expect("first");
     let mut elsewhere = input();
@@ -2151,6 +2379,7 @@ fn a_new_page_lands_after_the_pages_already_there() {
         &clock(),
         &notes_sync::document::VaultFile::Page(second_page()),
         &elsewhere,
+        None,
     )
     .expect("second");
 
@@ -2175,9 +2404,9 @@ fn a_drift_echo_still_asks_for_the_file_to_be_rewritten() {
         vec![node(NODE_ID, &far, "From a broken clock")],
         &far,
     ));
-    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
 
-    let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
+    let outcome = merge_document(&transaction, &clock(), &file, &input(), None).expect("replay");
 
     assert!(outcome.needs_write_back);
     // What says the file is behind is the dirty mark, not a hash that disagrees
@@ -2209,6 +2438,7 @@ fn a_loser_with_a_newline_is_still_json() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![multiline], &stamp(5, "a3f2"))),
         &input(),
+        None,
     )
     .expect("seed");
     // Never exported, so this device holds the only copy of it.
@@ -2227,6 +2457,7 @@ fn a_loser_with_a_newline_is_still_json() {
             &stamp(9, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("newer");
 
@@ -2269,6 +2500,7 @@ fn a_same_stamp_defeat_is_labelled_as_one() {
             &theirs,
         )),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -2280,6 +2512,7 @@ fn a_same_stamp_defeat_is_labelled_as_one() {
             &theirs,
         )),
         &input(),
+        None,
     )
     .expect("tie");
 
@@ -2312,9 +2545,10 @@ fn replaying_a_trash_with_several_roots_changes_nothing() {
         })
         .collect();
     let file = trash(roots, &mine);
-    merge_document(&transaction, &clock(), &file, &trash_input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &trash_input(), None).expect("first");
 
-    let outcome = merge_document(&transaction, &clock(), &file, &trash_input()).expect("replay");
+    let outcome =
+        merge_document(&transaction, &clock(), &file, &trash_input(), None).expect("replay");
 
     assert_eq!(outcome.applied, 0);
     assert_eq!(conflicts(&transaction), 0);
@@ -2389,6 +2623,7 @@ fn a_split_line_grants_existence_and_position_only() {
             &mark,
         )),
         &input(),
+        None,
     )
     .expect("parent");
 
@@ -2435,11 +2670,13 @@ fn a_child_document_converges_in_either_arrival_order() {
             notes_sync::document::VaultFile::Page(child_document(&mark, "2024 Archive", true));
 
         if child_first {
-            merge_document(&transaction, &clock(), &child_file, &child_input()).expect("child");
-            merge_document(&transaction, &clock(), &parent_file, &input()).expect("parent");
+            merge_document(&transaction, &clock(), &child_file, &child_input(), None)
+                .expect("child");
+            merge_document(&transaction, &clock(), &parent_file, &input(), None).expect("parent");
         } else {
-            merge_document(&transaction, &clock(), &parent_file, &input()).expect("parent");
-            merge_document(&transaction, &clock(), &child_file, &child_input()).expect("child");
+            merge_document(&transaction, &clock(), &parent_file, &input(), None).expect("parent");
+            merge_document(&transaction, &clock(), &child_file, &child_input(), None)
+                .expect("child");
         }
 
         states.push((
@@ -2480,12 +2717,13 @@ fn replaying_a_split_pair_changes_nothing() {
     ));
     let child_file =
         notes_sync::document::VaultFile::Page(child_document(&mark, "2024 Archive", true));
-    merge_document(&transaction, &clock(), &parent_file, &input()).expect("parent");
-    merge_document(&transaction, &clock(), &child_file, &child_input()).expect("child");
+    merge_document(&transaction, &clock(), &parent_file, &input(), None).expect("parent");
+    merge_document(&transaction, &clock(), &child_file, &child_input(), None).expect("child");
 
-    let again = merge_document(&transaction, &clock(), &parent_file, &input()).expect("replay");
+    let again =
+        merge_document(&transaction, &clock(), &parent_file, &input(), None).expect("replay");
     let and_again =
-        merge_document(&transaction, &clock(), &child_file, &child_input()).expect("replay");
+        merge_document(&transaction, &clock(), &child_file, &child_input(), None).expect("replay");
 
     assert_eq!(again.applied, 0, "the parent's line states nothing new");
     assert_eq!(and_again.applied, 0, "and neither does the child");
@@ -2527,8 +2765,8 @@ fn equal_claim_stamps_break_place_ties_by_digest() {
         } else {
             (&one, &other)
         };
-        merge_document(&transaction, &clock(), a, &input()).expect("first");
-        merge_document(&transaction, &clock(), b, &input()).expect("second");
+        merge_document(&transaction, &clock(), a, &input(), None).expect("first");
+        merge_document(&transaction, &clock(), b, &input(), None).expect("second");
 
         orders.push(order_under(&transaction, PAGE_ID));
     }
@@ -2587,8 +2825,8 @@ fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
         } else {
             (&moved, &edited)
         };
-        merge_document(&transaction, &clock(), first, &input()).expect("first");
-        merge_document(&transaction, &clock(), second, &input()).expect("second");
+        merge_document(&transaction, &clock(), first, &input(), None).expect("first");
+        merge_document(&transaction, &clock(), second, &input(), None).expect("second");
 
         orders.push(order_under(&transaction, PAGE_ID));
     }
@@ -2617,6 +2855,7 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2"))),
         &input(),
+        None,
     )
     .expect("first page");
     let mut elsewhere = input();
@@ -2626,6 +2865,7 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
         &clock(),
         &notes_sync::document::VaultFile::Page(second_page()),
         &elsewhere,
+        None,
     )
     .expect("second page");
 
@@ -2657,6 +2897,7 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
         &clock(),
         &notes_sync::document::VaultFile::Page(home),
         &at_root,
+        None,
     )
     .expect("home");
 
@@ -2687,7 +2928,7 @@ fn a_resolved_picture_replayed_is_not_an_edit() {
         byte_size: 421_904,
     });
     let file = notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)));
-    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
     // The bytes land: the row learns its hash and takes the domain form.
     transaction
         .execute(
@@ -2705,7 +2946,7 @@ fn a_resolved_picture_replayed_is_not_an_edit() {
         .expect("asset");
     let before = hlc_of(&transaction, NODE_ID);
 
-    let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
+    let outcome = merge_document(&transaction, &clock(), &file, &input(), None).expect("replay");
 
     assert_eq!(outcome.applied, 0, "the same picture is not a new edit");
     assert_eq!(
@@ -2742,7 +2983,7 @@ fn a_picture_whose_bytes_are_known_lands_in_domain_form() {
     });
     let file = notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)));
 
-    merge_document(&transaction, &clock(), &file, &input()).expect("merge");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("merge");
 
     let (hash, path): (String, String) = transaction
         .query_row(
@@ -2768,12 +3009,13 @@ fn a_replaced_picture_under_an_equal_stamp_is_an_edit() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let file = page_with_picture("assets/holiday-9f2c1b7a4e6d.png");
-    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
     resolve_picture(&transaction, HASH);
     let before = hlc_of(&transaction, NODE_ID);
 
     let replaced = page_with_picture("assets/holiday-aaaabbbbcccc.png");
-    let outcome = merge_document(&transaction, &clock(), &replaced, &input()).expect("replace");
+    let outcome =
+        merge_document(&transaction, &clock(), &replaced, &input(), None).expect("replace");
 
     assert_eq!(
         outcome.applied, 1,
@@ -2791,12 +3033,12 @@ fn a_repositioned_picture_is_not_an_edit() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let file = page_with_picture("assets/holiday-9f2c1b7a4e6d.png");
-    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    merge_document(&transaction, &clock(), &file, &input(), None).expect("first");
     resolve_picture(&transaction, HASH);
     let before = hlc_of(&transaction, NODE_ID);
 
     let moved = page_with_picture("../assets/holiday-9f2c1b7a4e6d.png");
-    let outcome = merge_document(&transaction, &clock(), &moved, &input()).expect("replay");
+    let outcome = merge_document(&transaction, &clock(), &moved, &input(), None).expect("replay");
 
     assert_eq!(
         outcome.applied, 0,
@@ -2866,6 +3108,7 @@ fn a_file_whose_footer_was_lost_still_asks_to_be_rewritten() {
         &clock(),
         &notes_sync::parse::parse(&whole).expect("parse"),
         &input(),
+        None,
     )
     .expect("first");
 
@@ -2880,6 +3123,7 @@ fn a_file_whose_footer_was_lost_still_asks_to_be_rewritten() {
         &clock(),
         &notes_sync::parse::parse(truncated.as_bytes()).expect("parse"),
         &input(),
+        None,
     )
     .expect("second");
 
@@ -2936,6 +3180,7 @@ fn a_pictures_unknown_tokens_reach_the_row_in_the_order_the_file_wrote_them() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![shot], &stamp(5, "a3f2"))),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -2977,6 +3222,7 @@ fn a_merge_learns_the_writing_devices_name() {
         &clock(),
         &notes_sync::document::VaultFile::Page(named("Studio")),
         &input(),
+        None,
     )
     .expect("merge");
     assert_eq!(
@@ -2992,6 +3238,7 @@ fn a_merge_learns_the_writing_devices_name() {
         &clock(),
         &notes_sync::document::VaultFile::Page(named("Studio 2")),
         &input(),
+        None,
     )
     .expect("merge");
     assert_eq!(
@@ -3022,6 +3269,7 @@ fn a_file_that_names_nobody_leaves_the_names_alone() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("merge");
 
@@ -3046,6 +3294,7 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
 
@@ -3059,6 +3308,7 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
         &clock(),
         &notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &far, "This week")], &far)),
         &input(),
+        None,
     )
     .expect("drift");
 
@@ -3078,6 +3328,7 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
             &stamp(9, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("seed");
     merge_document(
@@ -3088,6 +3339,7 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
             &stamp(5, "a3f2"),
         )),
         &input(),
+        None,
     )
     .expect("older");
 
@@ -3125,6 +3377,7 @@ fn a_file_cannot_rename_this_device() {
             )
         }),
         &input(),
+        None,
     )
     .expect("merge");
 
