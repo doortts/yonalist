@@ -408,12 +408,11 @@ HTML도 올라갔다. 그런데 `data-wf-layout`은 살아 있고
 살아남는다. base64는 `kind: yonalist-outline-clipboard`, `version: 1`,
 `marker: "todo"`로 디코드됐다.
 
-열려 있는 확인 두 개:
+열려 있던 확인 두 개는 2026-08-21 사용자가 실앱에서 눌러 닫았다.
 
-1. **쓰는 쪽, 새 담체.** 첫 `<ul>`/`<ol>`에 붙은 속성이 같은 재작성을
-   살아남는지. ⌘C 한 번 뒤 pasteboard `public.html`을 다시 읽으면 끝난다.
-2. **읽는 쪽.** 같은 클립보드를 아웃라인에 붙여넣어 행으로 들어오는지.
-   WKWebView가 `getData("text/html")`에 무엇을 돌려주는지는 pasteboard 덤프가
-   답하지 않는다 — `com.apple.WebKit.custom-pasteboard-data`가 `text/html`을
-   타입 목록에 올려 두고도 값은 들고 있지 않다. 잎 행 하나를 ⌘C한 뒤 빈 행에
-   ⌘V해서, 새 형제 행이 생기면 닫힌 것이고 `- A`라는 글자가 박히면 깨진 것이다.
+1. **쓰는 쪽, 새 담체.** 첫 `<ul>`/`<ol>`에 붙은 속성도 같은 재작성을
+   살아남는다.
+2. **읽는 쪽.** ⌘C한 행을 아웃라인에 ⌘V하면 행으로 들어온다. WKWebView가
+   `getData("text/html")`에 payload가 실린 마크업을 돌려준다는 뜻이다 —
+   `com.apple.WebKit.custom-pasteboard-data`가 `text/html`을 타입 목록에만
+   올려 두고 값은 안 들고 있어도 그렇다.
