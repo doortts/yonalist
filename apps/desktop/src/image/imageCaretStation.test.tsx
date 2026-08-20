@@ -43,6 +43,31 @@ function imageBoot(): BootSnapshot {
   };
 }
 
+/** Two pictures stacked, the shape a run of pasted screenshots makes. */
+function stackedBoot(): BootSnapshot {
+  return {
+    ...snapshot,
+    viewport: {
+      ...snapshot.viewport!,
+      nodes: [
+        snapshot.viewport!.nodes[0]!,
+        imageNode,
+        {
+          ...imageNode,
+          id: "lower",
+          sortKey: 2_560,
+          text: "dog.png",
+          image: { ...imageNode.image, originalName: "dog.png" }
+        },
+        {
+          ...snapshot.viewport!.nodes[1]!,
+          sortKey: 3_072
+        }
+      ]
+    }
+  };
+}
+
 /** The image carries a child, so a zoom into it has a body row to reach. */
 function zoomBoot(): BootSnapshot {
   return {
@@ -89,6 +114,24 @@ async function renderImageOutline() {
     ".notes-image-caret-stop"
   );
   return { notesApi, view, station };
+}
+
+async function renderStackedImages() {
+  const notesApi = appApi();
+  notesApi.bootstrap = vi.fn().mockResolvedValue(stackedBoot());
+  notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
+  const view = render(<App api={notesApi} />);
+  await screen.findByRole("group", { name: "Image: dog.png" });
+  return { notesApi, view };
+}
+
+function stationsOf(
+  view: { container: HTMLElement },
+  nodeId: string
+): readonly HTMLElement[] {
+  return [...view.container.querySelectorAll<HTMLElement>(
+    `.notes-outline-list .notes-image-caret-stop[data-node-id="${nodeId}"]`
+  )];
 }
 
 function stations(view: { container: HTMLElement }): readonly HTMLElement[] {
@@ -369,5 +412,25 @@ describe("image caret station", () => {
       await waitFor(() => expect(
         screen.getByDisplayValue("First thought")
       ).toHaveFocus());
+    });
+  // The row this key takes is not the row it stands on, so nothing unmounts
+  // under the caret and nothing may move it.
+  it("takes the image above from the before station and stands its ground",
+    async () => {
+      const { notesApi, view } = await renderStackedImages();
+      const [before] = stationsOf(view, "lower");
+      before!.focus();
+
+      fireEvent.keyDown(before!, { key: "Backspace" });
+
+      await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: expect.objectContaining({
+            kind: "deleteSubtree",
+            id: "image"
+          })
+        })
+      ));
+      expect(before).toHaveFocus();
     });
 });

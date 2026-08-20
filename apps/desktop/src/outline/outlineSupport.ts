@@ -560,6 +560,13 @@ function executeRowIntent(
       return;
     case "trash": {
       const targetId = intent.nodeId ?? node.id;
+      // A trash aimed past the caret's own row leaves the key's own surface
+      // standing, so there is nothing to hand the caret on to: it stays where
+      // it stood, the way it stands after eating a character.
+      if (targetId !== node.id) {
+        void store.deleteSubtree(targetId);
+        return;
+      }
       // The surface the key came from unmounts with the row it takes, so the
       // caret would be left on the document body. Its neighbour is read off the
       // rows as they still stand and taken once the command lands -- the same
