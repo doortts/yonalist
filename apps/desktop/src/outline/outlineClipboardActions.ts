@@ -118,11 +118,12 @@ export function outlineClipboardActions({
   // one-row band runs, plus the caret handoff and the feedback line the row
   // menu's Copy and Cut never had. The write starts inside the keydown for the
   // same reason `putImageOnClipboard` does.
-  const rowFormats = (nodeId: string) => index.node(nodeId)
-    ? buildOutlineClipboardFormats(store.getSnapshot(), [nodeId])
-    : undefined;
   const copyRow = (nodeId: string) => {
-    const formats = rowFormats(nodeId);
+    // A row the sync or an undo took away between the render and the keydown
+    // asked for nothing, so it hears nothing -- the same silence `cutRow` and
+    // `putImageOnClipboard` keep for it.
+    if (!index.node(nodeId)) return;
+    const formats = buildOutlineClipboardFormats(store.getSnapshot(), [nodeId]);
     // A copy asks for no window gate: it deletes nothing, so it loses nothing
     // that was not already off screen. Only the size can turn it down.
     if (!formats) return reportWriteFailure();
@@ -142,7 +143,7 @@ export function outlineClipboardActions({
       setSelectionFeedback(OUTLINE_WINDOW_INCOMPLETE);
       return;
     }
-    const formats = rowFormats(nodeId);
+    const formats = buildOutlineClipboardFormats(store.getSnapshot(), [nodeId]);
     if (!formats) {
       setSelectionFeedback(CUT_OVER_CLIPBOARD_BOUNDS);
       return;
