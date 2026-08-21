@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { NotesStore } from "../notesStore";
 import { localDateIso } from "../outline/outlineSlash";
 import { MobileDayHeader } from "./MobileDayHeader";
+import { MobileDayMenu } from "./MobileDayMenu";
 import { MobileOutline } from "./MobileOutline";
 
 /**
@@ -20,6 +21,9 @@ import { MobileOutline } from "./MobileOutline";
 export function MobileToday({ store }: { readonly store: NotesStore }) {
   const [today] = useState(localDateIso);
   const [day, setDay] = useState(today);
+  // Held here rather than inside the outline: the bare outline draws no
+  // toolbar, so the screen owns the answer and the day's menu asks for it.
+  const [showCompleted, setShowCompleted] = useState(true);
   const shell = useSyncExternalStore(
     store.subscribeShell,
     store.getShellSnapshot,
@@ -41,8 +45,23 @@ export function MobileToday({ store }: { readonly store: NotesStore }) {
 
   return (
     <>
-      <MobileDayHeader date={day} today={today} onOpenDay={openDay} />
-      <MobileOutline store={store} shell={shell} />
+      <MobileDayHeader
+        date={day}
+        today={today}
+        onOpenDay={openDay}
+        menu={
+          <MobileDayMenu
+            showCompleted={showCompleted}
+            onShowCompletedChange={setShowCompleted}
+          />
+        }
+      />
+      <MobileOutline
+        store={store}
+        shell={shell}
+        showCompleted={showCompleted}
+        onShowCompletedChange={setShowCompleted}
+      />
     </>
   );
 }

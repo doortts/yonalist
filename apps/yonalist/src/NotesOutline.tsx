@@ -55,7 +55,8 @@ export interface PaneRestoreRequest {
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
   onHome, onOpenSplit, onTagClick, onDateClick, onClose, paneId, restoreRequest,
-  onSelectionCountChange, bare = false
+  onSelectionCountChange, bare = false, showCompleted: controlledShowCompleted,
+  onShowCompletedChange
 }: {
   readonly store: NotesStore;
   readonly status: NotesShellSnapshot["status"];
@@ -79,6 +80,13 @@ export function NotesOutline({
    * pill and the errors are unchanged; only the outline's own chrome goes.
    */
   readonly bare?: boolean;
+  /**
+   * Whether finished rows are drawn. Uncontrolled by default, since the
+   * outline's own toolbar owns the toggle. A `bare` shell drops that toolbar,
+   * so it has to hold the answer itself and hand it back down.
+   */
+  readonly showCompleted?: boolean;
+  readonly onShowCompletedChange?: (visible: boolean) => void;
   readonly onSelectionCountChange?: (
     paneId: "primary" | "secondary",
     count: number
@@ -99,7 +107,12 @@ export function NotesOutline({
   );
   const selectedIdsRef = useRef<readonly string[]>([]);
   const [rowRuntime] = useState(() => new OutlineRowRuntime());
-  const [showCompleted, setShowCompleted] = useState(true);
+  const [ownShowCompleted, setOwnShowCompleted] = useState(true);
+  const showCompleted = controlledShowCompleted ?? ownShowCompleted;
+  // Narrowed to a plain answer rather than React's updater form: a controlled
+  // caller holds the state and has no previous value to be handed.
+  const setShowCompleted: (visible: boolean) => void =
+    onShowCompletedChange ?? setOwnShowCompleted;
   const [selectionFeedback, setSelectionFeedback] = useState("");
   const selectionOperation = useRef(false);
   const [selectionOperationBusy, setSelectionOperationBusy] = useState(false);
@@ -509,7 +522,7 @@ export function NotesOutline({
         zoomed={zoomRoot !== undefined}
         showCompleted={showCompleted}
         error={error}
-        onToggleCompleted={() => setShowCompleted((visible) => !visible)}
+        onToggleCompleted={() => setShowCompleted(!showCompleted)}
         onBack={() => onZoomRootChange(null)}
         onHome={onHome}
         onZoomTo={onZoomRootChange}

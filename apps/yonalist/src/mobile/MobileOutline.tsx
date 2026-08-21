@@ -14,10 +14,14 @@ import type { NotesShellSnapshot } from "../store/storeSubscriptions";
  */
 export function MobileOutline({
   store,
-  shell
+  shell,
+  showCompleted,
+  onShowCompletedChange
 }: {
   readonly store: NotesStore;
   readonly shell: NotesShellSnapshot;
+  readonly showCompleted: boolean;
+  readonly onShowCompletedChange: (visible: boolean) => void;
 }) {
   const [zoomRootId, setZoomRootId] = useState<string | null>(null);
   // A day nobody has written in has no row in the page list to read a title
@@ -32,6 +36,8 @@ export function MobileOutline({
     <div className="mobile-outline">
       <NotesOutline
         bare
+        showCompleted={showCompleted}
+        onShowCompletedChange={onShowCompletedChange}
         store={store}
         status={shell.status}
         error={shell.error}

@@ -21,7 +21,10 @@ const glyphs = {
     "M14 3v4a1 1 0 0 0 1 1h4|M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2|M9 9l1 0|M9 13l6 0|M9 17l6 0",
   search: "M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0|M21 21l-6 -6",
   "chevron-left": "M15 6l-6 6l6 6",
-  "chevron-right": "M9 6l6 6l-6 6"
+  "chevron-right": "M9 6l6 6l-6 6",
+  dots:
+    "M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0|M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0|M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
+  check: "M5 12l5 5l10 -10"
 } as const;
 
 export type MobileIconName = keyof typeof glyphs;

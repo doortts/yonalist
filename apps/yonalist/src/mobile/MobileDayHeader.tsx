@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { shiftDay, weekdayOf } from "../journal";
 import { MobileIcon } from "./MobileIcon";
 
@@ -30,12 +31,15 @@ function dayLabel(date: string): string {
 export function MobileDayHeader({
   date,
   today,
-  onOpenDay
+  onOpenDay,
+  menu
 }: {
   readonly date: string;
   /** Today, so the day can say when it is the one being lived. */
   readonly today: string;
   readonly onOpenDay: (date: string) => void;
+  /** The day's overflow, drawn last so it sits at the end of the row. */
+  readonly menu?: ReactNode;
 }) {
   const previous = shiftDay(date, -1);
   const next = shiftDay(date, 1);
@@ -64,6 +68,7 @@ export function MobileDayHeader({
       >
         <MobileIcon name="chevron-right" size={18} />
       </button>
+      {menu}
     </header>
   );
 }

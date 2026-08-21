@@ -128,3 +128,54 @@
      the day above them. */
   padding-top: 2px;
 }
+
+/* The day's overflow. Anchored to its own button so the sheet opens under the
+   thumb that asked for it rather than from the screen edge. */
+.mobile-day-menu {
+  position: relative;
+  flex: none;
+}
+
+.mobile-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-card);
+  box-shadow: 0 10px 28px rgb(23 27 33 / 16%);
+}
+
+.mobile-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  /* The floor again: a menu row is the easiest thing on the screen to miss. */
+  min-height: 44px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-menu-item[aria-checked="true"] {
+  color: var(--text-1);
+}
+
+/* Kept at width whether or not it holds a tick, so the label does not shift
+   when the answer changes. */
+.mobile-menu-tick {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
