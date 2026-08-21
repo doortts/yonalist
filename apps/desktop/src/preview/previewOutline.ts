@@ -1,6 +1,6 @@
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import { bySiblingOrder, SORT_KEY_STEP } from "../outline/outlineSortKeys";
-import { ROOT_ID } from "../store/storeSupport";
+import { JOURNALS_ID, ROOT_ID } from "../store/storeSupport";
 
 export function createInitialPreviewNodes(): NoteView[] {
   return [
@@ -61,6 +61,34 @@ export function createInitialPreviewNodes(): NoteView[] {
         displayWidth: 480
       },
       text: "sample.png",
+      note: "",
+      marker: "bullet",
+      collapsed: false,
+      completed: false,
+      starred: false,
+      deleted: false
+    },
+    {
+      // Home draws the days nested under this, which is the whole reason the
+      // node exists: one row for the journals however many days there are.
+      id: JOURNALS_ID,
+      parentId: ROOT_ID,
+      sortKey: SORT_KEY_STEP * 2,
+      kind: "bullet", image: null,
+      text: "Journals",
+      note: "",
+      marker: "bullet",
+      collapsed: false,
+      completed: false,
+      starred: false,
+      deleted: false
+    },
+    {
+      id: "preview-day",
+      parentId: JOURNALS_ID,
+      sortKey: SORT_KEY_STEP,
+      kind: "bullet", image: null,
+      text: "2026-08-20",
       note: "",
       marker: "bullet",
       collapsed: false,

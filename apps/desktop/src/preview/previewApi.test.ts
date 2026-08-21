@@ -2,6 +2,7 @@ import type { IpcImportNode } from "../../../../packages/contracts/generated/Ipc
 import type { IpcNotesCommand } from "../../../../packages/contracts/generated/IpcNotesCommand";
 import { previewNotesApi } from "./previewApi";
 import { SORT_KEY_STEP } from "../outline/outlineSortKeys";
+import { JOURNALS_ID } from "../store/storeSupport";
 
 describe("browser-only preview adapter", () => {
   it("does not seed instructional text as a bullet", async () => {
@@ -31,14 +32,26 @@ describe("browser-only preview adapter", () => {
     })).rejects.toThrow();
   });
 
-  it("lists the root's live children as the pages", async () => {
+  it("lists the live children of root and of Journals as the pages", async () => {
     const boot = await previewNotesApi.bootstrap();
 
+    // A journal day is a page wherever it hangs from, which is what keeps the
+    // calendar and Today working while the days sit under one row on Home.
     expect(boot.pages).toEqual([
+      {
+        id: "preview-day",
+        title: "2026-08-20",
+        sortKey: SORT_KEY_STEP
+      },
       {
         id: "preview-page",
         title: "Welcome to Yonalist",
         sortKey: SORT_KEY_STEP
+      },
+      {
+        id: JOURNALS_ID,
+        title: "Journals",
+        sortKey: SORT_KEY_STEP * 2
       }
     ]);
     expect(boot.viewport?.nodes.map((node) => node.id))

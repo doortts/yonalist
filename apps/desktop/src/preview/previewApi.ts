@@ -21,7 +21,7 @@ import {
   previewPageNodes
 } from "./previewOutline";
 import { validatePreviewBatch } from "./previewValidation";
-import { ROOT_ID } from "../store/storeSupport";
+import { JOURNALS_ID, ROOT_ID } from "../store/storeSupport";
 import {
   allocateSiblingSortKey,
   applyRebalancedSortKeys,
@@ -609,7 +609,9 @@ const previewConflicts: SyncConflict[] = [
 
 function previewPages(): PageSummary[] {
   return nodes
-    .filter((node) => node.parentId === ROOT_ID && !node.deleted)
+    .filter((node) =>
+      (node.parentId === ROOT_ID || node.parentId === JOURNALS_ID) &&
+      !node.deleted)
     .map((node) => ({
       id: node.id,
       title: node.text,
