@@ -1847,11 +1847,8 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
 /// A child document that states the node it hangs from, the way a page the
 /// rescue parked under the recovery page is written back out.
 fn child_of(parent: &str, hlc: &str) -> PageDocument {
-    let mut document = page(Vec::new(), hlc);
-    document.id = DocumentId::Node(CHILD_ID.to_owned());
+    let mut document = child_document(hlc, "Archive", false);
     document.parent = Some(parent.to_owned());
-    document.sort_key = Some(4_294_967_296);
-    document.root.title = "Archive".to_owned();
     document
 }
 
@@ -1978,6 +1975,11 @@ fn a_child_document_does_not_stand_in_for_a_parent_that_is_already_here() {
     assert_eq!(
         waiting, 1,
         "and it still owes the write it owed before the child arrived"
+    );
+    assert_eq!(
+        recovery_page(&transaction),
+        None,
+        "and nothing was rescued, so there is no page to rescue it onto"
     );
 }
 
