@@ -1,0 +1,405 @@
+<title>Yonalist iOS v1 시안</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Inter:wght@400;500;600;650&display=swap">
+<style>
+  /* ------------------------------------------------------------------
+     프레임 안쪽은 Yonalist 앱 토큰(light), 바깥 시안 종이는 slate + ochre 주석.
+     iPhone 15 Pro 논리 해상도 393×852pt를 그대로 그린다.
+     ------------------------------------------------------------------ */
+  :root {
+    color-scheme: light;
+
+    /* 시안 종이 */
+    --paper: #e4e7ec;
+    --ink-1: #171b21;
+    --ink-2: #4d5661;
+    --ink-3: #7b8593;
+    --rule: #cdd3db;
+    --note: #92610f;
+    --note-soft: #f2e6cf;
+    --note-line: #d8c093;
+
+    /* 앱 토큰 — light */
+    --bg-app: #f5f6f8;
+    --bg-detail: #f8f9fb;
+    --bg-card: #ffffff;
+    --bg-hover: rgb(17 24 39 / 5%);
+    --bg-active: rgb(17 24 39 / 8%);
+    --border: #e5e7eb;
+    --border-strong: #d2d6dc;
+    --text-1: #1f2328;
+    --text-2: #59626e;
+    --text-3: #8c95a1;
+    --accent: #2563eb;
+    --accent-soft: rgb(37 99 235 / 9%);
+    --accent-contrast: #ffffff;
+    --favorite: #e75135;
+    --done: #16a34a;
+
+    --shadow-frame: 0 18px 44px rgb(23 27 33 / 18%);
+    --ios-font: -apple-system, "SF Pro Text", Inter, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink-1);
+    font-family: Inter, sans-serif;
+    padding: 48px 40px 80px;
+  }
+  h1 { font-family: Archivo, Inter, sans-serif; font-size: 26px; }
+  .lede { color: var(--ink-2); font-size: 14px; margin: 10px 0 8px; max-width: 720px; line-height: 1.6; }
+  .lede code { background: #d9dde3; border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+
+  .board { display: flex; flex-wrap: wrap; gap: 56px 44px; margin-top: 40px; align-items: flex-start; }
+  .cell { display: flex; flex-direction: column; gap: 14px; }
+  .cell-title { font-family: Archivo, Inter, sans-serif; font-size: 15px; font-weight: 600; }
+  .cell-title small { color: var(--ink-3); font-weight: 500; margin-left: 8px; }
+
+  .note {
+    background: var(--note-soft); border: 1px solid var(--note-line); color: var(--note);
+    border-radius: 8px; padding: 9px 12px; font-size: 12.5px; line-height: 1.55; max-width: 393px;
+  }
+  .note b { font-weight: 650; }
+
+  /* ---------- iPhone 15 Pro 프레임 ---------- */
+  .phone {
+    width: 393px; height: 852px; background: var(--bg-app);
+    border-radius: 44px; border: 8px solid #1c1e22;
+    box-shadow: var(--shadow-frame);
+    overflow: hidden; position: relative;
+    font-family: var(--ios-font); color: var(--text-1);
+    display: flex; flex-direction: column;
+  }
+  .statusbar {
+    height: 54px; flex: none; display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 0 28px 6px; font-size: 14px; font-weight: 600;
+  }
+  .island {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    width: 118px; height: 34px; background: #14161a; border-radius: 20px;
+  }
+  .homebar {
+    position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+    width: 140px; height: 5px; border-radius: 3px; background: rgb(17 24 39 / 30%);
+  }
+
+  .nav {
+    flex: none; padding: 6px 16px 10px; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid var(--border); background: var(--bg-app);
+  }
+  .nav .title { font-size: 19px; font-weight: 700; letter-spacing: -0.2px; }
+  .nav .sub { font-size: 12.5px; color: var(--text-3); font-weight: 500; }
+  .spacer { flex: 1; }
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--bg-card); color: var(--text-2);
+    display: grid; place-items: center; font-size: 15px; font-weight: 600;
+  }
+
+  .body { flex: 1; overflow: hidden; background: var(--bg-detail); padding: 12px 14px 0; }
+
+  /* carry-over 알림 줄 */
+  .carry {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--accent-soft); border: 1px solid rgb(37 99 235 / 22%);
+    border-radius: 10px; padding: 9px 12px; font-size: 13px; color: var(--text-2); margin-bottom: 12px;
+  }
+  .carry .cta { margin-left: auto; color: var(--accent); font-weight: 650; font-size: 13px; }
+
+  /* 아웃라인 줄 */
+  .row { display: flex; align-items: flex-start; gap: 9px; padding: 6px 2px; font-size: 16px; line-height: 1.45; }
+  .row.d1 { padding-left: 26px; }
+  .row.d2 { padding-left: 52px; }
+  .bullet { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); margin-top: 8.5px; }
+  .chk {
+    flex: none; width: 19px; height: 19px; border-radius: 6px; border: 1.6px solid var(--border-strong);
+    margin-top: 2.5px; display: grid; place-items: center; font-size: 12px; background: var(--bg-card);
+  }
+  .chk.doing { border-color: var(--accent); color: var(--accent); }
+  .chk.done { border-color: var(--done); background: var(--done); color: #fff; }
+  .row.done .txt { color: var(--text-3); text-decoration: line-through; }
+  .txt .tag { color: var(--accent); }
+  .txt .datetok { background: var(--accent-soft); color: var(--accent); border-radius: 5px; padding: 0 4px; font-size: 14.5px; }
+  .row.editing { background: var(--bg-card); border: 1px solid var(--accent); border-radius: 8px; margin: 0 -8px; padding-left: 10px; padding-right: 8px; }
+  .row.editing.d1 { padding-left: 36px; }
+  .caret { display: inline-block; width: 2px; height: 18px; background: var(--accent); vertical-align: -3px; }
+
+  /* 키보드 + 액세서리 바 */
+  .kb-zone { flex: none; }
+  .acc {
+    display: flex; gap: 8px; padding: 8px 12px; background: #eceef1; border-top: 1px solid var(--border-strong);
+  }
+  .acc button {
+    flex: 1; height: 40px; border-radius: 9px; border: 1px solid var(--border-strong);
+    background: var(--bg-card); font-size: 17px; color: var(--text-1);
+  }
+  .kb { height: 216px; background: #d3d6dc; display: grid; place-items: center; color: #9aa1ab; font-size: 13px; letter-spacing: 2px; }
+
+  /* 탭 바 */
+  .tabs {
+    flex: none; display: flex; border-top: 1px solid var(--border); background: var(--bg-app);
+    padding: 8px 6px 26px;
+  }
+  .tab { flex: 1; text-align: center; font-size: 10.5px; font-weight: 600; color: var(--text-3); }
+  .tab .glyph { font-size: 21px; display: block; margin-bottom: 3px; }
+  .tab.on { color: var(--accent); }
+
+  /* Journals 피드 */
+  .day { margin-bottom: 16px; }
+  .dayhead { display: flex; align-items: baseline; gap: 8px; padding: 4px 2px 6px; }
+  .dayhead .d { font-size: 16px; font-weight: 700; }
+  .dayhead .w { font-size: 12.5px; color: var(--text-3); }
+  .day.past { opacity: 0.62; }
+  .more {
+    width: 100%; padding: 10px; border-radius: 10px; border: 1px dashed var(--border-strong);
+    background: none; color: var(--text-2); font-size: 13.5px; font-weight: 600;
+  }
+
+  /* Pages 목록 */
+  .pagerow {
+    display: flex; align-items: center; gap: 10px; background: var(--bg-card);
+    border: 1px solid var(--border); border-radius: 11px; padding: 13px 14px; margin-bottom: 9px; font-size: 16px;
+  }
+  .pagerow .star { color: var(--favorite); font-size: 14px; }
+  .pagerow .cnt { margin-left: auto; color: var(--text-3); font-size: 13px; }
+
+  /* Search */
+  .searchbox {
+    display: flex; align-items: center; gap: 8px; background: var(--bg-card);
+    border: 1px solid var(--border-strong); border-radius: 11px; padding: 10px 12px; font-size: 16px; margin-bottom: 10px;
+  }
+  .chips { display: flex; gap: 8px; margin-bottom: 14px; }
+  .chip { font-size: 12.5px; font-weight: 600; color: var(--text-2); border: 1px solid var(--border-strong); background: var(--bg-card); border-radius: 999px; padding: 5px 11px; }
+  .chip.on { color: var(--accent); border-color: rgb(37 99 235 / 45%); background: var(--accent-soft); }
+  .hitgroup { font-size: 12.5px; font-weight: 650; color: var(--text-3); margin: 12px 2px 4px; text-transform: none; }
+  .hit { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 7px; font-size: 15px; }
+  .hit em { font-style: normal; background: #fff3c4; border-radius: 3px; }
+
+  /* 첫 실행 */
+  .setup { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 34px; text-align: center; background: var(--bg-detail); }
+  .cloud { font-size: 56px; margin-bottom: 18px; }
+  .setup h2 { font-size: 22px; font-weight: 700; margin-bottom: 10px; }
+  .setup p { font-size: 14.5px; color: var(--text-2); line-height: 1.6; margin-bottom: 26px; }
+  .primary {
+    width: 100%; padding: 15px; border-radius: 13px; border: none;
+    background: var(--accent); color: var(--accent-contrast); font-size: 16.5px; font-weight: 650;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 30px;
+    font-size: 12.5px; font-weight: 600; color: var(--text-2);
+    border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; background: var(--bg-card);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--done); }
+</style>
+
+<h1>Yonalist iOS v1 — 화면 시안</h1>
+<p class="lede">
+  iPhone 15 Pro(393×852pt) 기준. 프레임 안 색은 데스크톱 <code>styles.css</code>의 light 토큰
+  그대로다. 탭 네 개(Today · Journals · Pages · Search)가 데스크톱 사이드바를 대신하고,
+  들여쓰기·완료 토글은 키보드 액세서리 바로 옮겼다. 설계 문서:
+  <code>docs/superpowers/plans/2026-08-21-ios-app-v1.md</code>
+</p>
+
+<div class="board">
+
+  <!-- ① Today -->
+  <div class="cell">
+    <div class="cell-title">① Today <small>시작 화면 · 편집 중</small></div>
+    <div class="phone">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="nav">
+        <div>
+          <div class="title">Aug 21, 2026</div>
+          <div class="sub">Thursday · Today</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="icon-btn">←</div>
+        <div class="icon-btn">→</div>
+        <div class="icon-btn">☰</div>
+      </div>
+      <div class="body">
+        <div class="carry">↩ 3 unfinished to-dos from last 7 days <span class="cta">Carry over</span></div>
+        <div class="row"><span class="chk done">✓</span><span class="txt done" style="color:var(--text-3);text-decoration:line-through">Reply to design review</span></div>
+        <div class="row"><span class="chk doing">–</span><span class="txt">Draft iOS sync plan <span class="tag">#yonalist</span></span></div>
+        <div class="row d1"><span class="bullet"></span><span class="txt">iCloud container is the vault</span></div>
+        <div class="row d1 editing"><span class="bullet"></span><span class="txt">download layer is Swift plugin<span class="caret"></span></span></div>
+        <div class="row"><span class="chk"></span><span class="txt">Book dentist for <span class="datetok">2026-08-25</span></span></div>
+      </div>
+      <div class="kb-zone">
+        <div class="acc">
+          <button>⇤</button><button>⇥</button><button>☐</button><button>＠</button><button>📅</button><button>⌄</button>
+        </div>
+        <div class="kb">KEYBOARD</div>
+      </div>
+      <div class="homebar"></div>
+    </div>
+    <div class="note">
+      <b>키보드 액세서리 바</b>가 데스크톱 단축키를 대신한다: 내어쓰기 ⇤ · 들여쓰기 ⇥ ·
+      To-do 전환 ☐ · 태그 ＠ · 날짜 토큰 📅 · 키보드 내리기 ⌄.
+      불릿/체크박스 탭 = ⌘↩ 3단계 완료 전환.
+    </div>
+  </div>
+
+  <!-- ② Journals -->
+  <div class="cell">
+    <div class="cell-title">② Journals <small>날짜 내림차순 피드</small></div>
+    <div class="phone">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="nav">
+        <div class="title">Journals</div>
+        <div class="spacer"></div>
+        <div class="icon-btn">📅</div>
+      </div>
+      <div class="body">
+        <div class="day">
+          <div class="dayhead"><span class="d">Aug 21, 2026</span><span class="w">Thu · Today</span></div>
+          <div class="row"><span class="chk doing">–</span><span class="txt">Draft iOS sync plan</span></div>
+          <div class="row d1"><span class="bullet"></span><span class="txt">iCloud container is the vault</span></div>
+        </div>
+        <div class="day past">
+          <div class="dayhead"><span class="d">Aug 20, 2026</span><span class="w">Wed</span></div>
+          <div class="row"><span class="chk done">✓</span><span class="txt">Fix dataless file guard</span></div>
+          <div class="row"><span class="bullet"></span><span class="txt">TN2336: bounced files need different bytes</span></div>
+        </div>
+        <div class="day past">
+          <div class="dayhead"><span class="d">Aug 19, 2026</span><span class="w">Tue</span></div>
+          <div class="row"><span class="bullet"></span><span class="txt">Completion is a declaration — ship it</span></div>
+        </div>
+        <button class="more">Show 7 more days</button>
+      </div>
+      <div class="tabs">
+        <div class="tab">​<span class="glyph">☀️</span>Today</div>
+        <div class="tab on"><span class="glyph">📖</span>Journals</div>
+        <div class="tab"><span class="glyph">📄</span>Pages</div>
+        <div class="tab"><span class="glyph">🔍</span>Search</div>
+      </div>
+      <div class="homebar"></div>
+    </div>
+    <div class="note">
+      데스크톱 저널 설계 A5·A6 그대로: <b>맨 위 하루만 편집</b>, 지난 날은 흐리게 + 읽기 전용,
+      줄을 누르면 그날 페이지로 이동. 7일씩 늘려 그린다. 📅 = 월 달력 시트.
+    </div>
+  </div>
+
+  <!-- ③ Pages -->
+  <div class="cell">
+    <div class="cell-title">③ Pages <small>저널 제외 목록</small></div>
+    <div class="phone">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="nav">
+        <div class="title">Pages</div>
+        <div class="spacer"></div>
+        <div class="icon-btn">＋</div>
+      </div>
+      <div class="body">
+        <div class="pagerow"><span class="star">★</span> Reading list <span class="cnt">42</span></div>
+        <div class="pagerow"><span class="star">★</span> Yonalist roadmap <span class="cnt">128</span></div>
+        <div class="pagerow">Meeting notes <span class="cnt">36</span></div>
+        <div class="pagerow">Recipes <span class="cnt">17</span></div>
+        <div class="pagerow">Travel — Jeju <span class="cnt">23</span></div>
+      </div>
+      <div class="tabs">
+        <div class="tab"><span class="glyph">☀️</span>Today</div>
+        <div class="tab"><span class="glyph">📖</span>Journals</div>
+        <div class="tab on"><span class="glyph">📄</span>Pages</div>
+        <div class="tab"><span class="glyph">🔍</span>Search</div>
+      </div>
+      <div class="homebar"></div>
+    </div>
+    <div class="note">별표 페이지가 위. 행의 숫자는 줄 수. ＋ = New page(데스크톱과 같은 경로). 저널은 여기 안 나온다(데스크톱 A3).</div>
+  </div>
+
+  <!-- ④ Page 상세 -->
+  <div class="cell">
+    <div class="cell-title">④ Page 상세 <small>zoom 포함</small></div>
+    <div class="phone">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="nav">
+        <div>
+          <div class="sub">Pages › Yonalist roadmap</div>
+          <div class="title">Mobile v1</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="icon-btn">⋯</div>
+      </div>
+      <div class="body">
+        <div class="row"><span class="chk done">✓</span><span class="txt done" style="color:var(--text-3);text-decoration:line-through">Pick architecture: Tauri 2 iOS</span></div>
+        <div class="row"><span class="chk doing">–</span><span class="txt">Design mockups</span></div>
+        <div class="row d1"><span class="bullet"></span><span class="txt">Tab bar replaces sidebar</span></div>
+        <div class="row d1"><span class="bullet"></span><span class="txt">Accessory bar replaces shortcuts</span></div>
+        <div class="row"><span class="chk"></span><span class="txt">Vertical slice: today journal on device</span></div>
+        <div class="row d1"><span class="chk"></span><span class="txt">iCloud download layer <span class="tag">#risk</span></span></div>
+      </div>
+      <div class="tabs">
+        <div class="tab"><span class="glyph">☀️</span>Today</div>
+        <div class="tab"><span class="glyph">📖</span>Journals</div>
+        <div class="tab on"><span class="glyph">📄</span>Pages</div>
+        <div class="tab"><span class="glyph">🔍</span>Search</div>
+      </div>
+      <div class="homebar"></div>
+    </div>
+    <div class="note">불릿 길게 누르기 = zoom(그 줄이 새 루트). 위 breadcrumb으로 되돌아간다. 드래그 재배치는 v1 비대상 — 이동은 ⇤/⇥와 잘라 붙이기로 감당.</div>
+  </div>
+
+  <!-- ⑤ Search -->
+  <div class="cell">
+    <div class="cell-title">⑤ Search <small>date: 필터 포함</small></div>
+    <div class="phone">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="nav"><div class="title">Search</div></div>
+      <div class="body">
+        <div class="searchbox">🔍 <span>sync</span><span class="caret"></span></div>
+        <div class="chips">
+          <span class="chip on">All</span>
+          <span class="chip">To-dos</span>
+          <span class="chip">date:2026-08-21</span>
+          <span class="chip">#yonalist</span>
+        </div>
+        <div class="hitgroup">AUG 21, 2026</div>
+        <div class="hit">Draft iOS <em>sync</em> plan</div>
+        <div class="hitgroup">YONALIST ROADMAP</div>
+        <div class="hit">Markdown <em>sync</em> uses HLC merge</div>
+        <div class="hit"><em>Sync</em> status badge on mobile</div>
+      </div>
+      <div class="tabs">
+        <div class="tab"><span class="glyph">☀️</span>Today</div>
+        <div class="tab"><span class="glyph">📖</span>Journals</div>
+        <div class="tab"><span class="glyph">📄</span>Pages</div>
+        <div class="tab on"><span class="glyph">🔍</span>Search</div>
+      </div>
+      <div class="homebar"></div>
+    </div>
+    <div class="note">쿼리 문법은 데스크톱과 동일(<b>date:, 범위 date:a..b, #태그</b>). 칩은 자주 쓰는 필터의 바로가기일 뿐 새 문법이 아니다. 결과는 페이지별 묶음, 탭하면 그 줄로 이동.</div>
+  </div>
+
+  <!-- ⑥ 첫 실행 -->
+  <div class="cell">
+    <div class="cell-title">⑥ 첫 실행 <small>iCloud vault 연결</small></div>
+    <div class="phone">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="setup">
+        <div class="cloud">☁️</div>
+        <h2>Your vault lives in iCloud</h2>
+        <p>Yonalist keeps your notes as Markdown files in its iCloud Drive folder.
+        Your Mac points at the same folder — edits merge automatically.</p>
+        <button class="primary">Open my vault</button>
+        <div class="badge"><span class="dot"></span> iCloud available · 214 files to download</div>
+      </div>
+      <div class="homebar"></div>
+    </div>
+    <div class="note">
+      vault가 이미 있으면 버튼 하나로 연결하고 <b>내려받기 진행률</b>을 배지로 보여준다.
+      없으면 같은 화면이 "Create my vault"가 된다. iCloud 꺼짐 = 로컬 전용으로 시작하고
+      배지가 경고로 바뀐다.
+    </div>
+  </div>
+
+</div>
