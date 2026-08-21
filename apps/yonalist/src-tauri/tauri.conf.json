@@ -28,7 +28,8 @@
       "resources/GamjaFlower-OFL.txt",
       "resources/PoorStory-OFL.txt",
       "resources/SingleDay-OFL.txt",
-      "resources/FONT_SOURCE.md"
+      "resources/FONT_SOURCE.md",
+      "resources/THIRD-PARTY-NOTICES.md"
     ],
     "icon": [
       "icons/32x32.png",
