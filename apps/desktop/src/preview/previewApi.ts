@@ -21,7 +21,8 @@ import {
   previewPageNodes
 } from "./previewOutline";
 import { validatePreviewBatch } from "./previewValidation";
-import { isPageParent, ROOT_ID } from "../store/storeSupport";
+import { isPageParent } from "../store/storeSupport";
+import { owningPageId } from "../appNavigation";
 import {
   allocateSiblingSortKey,
   applyRebalancedSortKeys,
@@ -700,7 +701,7 @@ export const previewNotesApi: NotesApi = {
         .slice(0, query.limit)
         .map((node) => ({
           node: { ...node },
-          pageId: node.parentId === ROOT_ID ? node.id : activePageId,
+          pageId: owningPageId(node.id, nodes) ?? activePageId,
           snippet: node.text
         })),
       nextCursor: null

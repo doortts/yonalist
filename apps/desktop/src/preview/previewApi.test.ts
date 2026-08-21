@@ -32,6 +32,31 @@ describe("browser-only preview adapter", () => {
     })).rejects.toThrow();
   });
 
+  // The preview answers "which page is this hit in?" for the same reason
+  // SQLite does, so it has to answer it the same way: the nearest page above
+  // the row. A journal day is that page for the rows inside it.
+  it("attributes a hit inside a journal day to the day", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-day-entry-create",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-day-entry",
+        parent_id: "preview-day",
+        before_id: null,
+        text: "Standup ritual"
+      }
+    });
+
+    const nested = await previewNotesApi.search({ text: "Standup ritual", cursor: null, limit: 10 });
+    expect(nested.hits.map((hit) => hit.pageId)).toEqual(["preview-day"]);
+    const day = await previewNotesApi.search({ text: "2026-08-20", cursor: null, limit: 10 });
+    expect(day.hits.map((hit) => hit.pageId)).toEqual(["preview-day"]);
+  });
+
   it("lists the live children of root and of Journals as the pages", async () => {
     const boot = await previewNotesApi.bootstrap();
 
