@@ -1,0 +1,70 @@
+/*
+ * The phone shell. Colours come from the app's own tokens in `styles.css`, so
+ * a theme change reaches this without a second palette to keep in step.
+ */
+
+.mobile-app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--bg-app);
+  color: var(--text-1);
+  /* The tab bar sits on the home indicator otherwise. */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-screen {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg-detail);
+  padding: 12px 14px;
+  padding-top: calc(12px + env(safe-area-inset-top));
+  /* A drag near the edge is the system's gesture, not the app's. */
+  overscroll-behavior: contain;
+}
+
+.mobile-screen-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  margin: 0;
+}
+
+.mobile-tabs {
+  display: flex;
+  flex: none;
+  border-top: 1px solid var(--border);
+  background: var(--bg-app);
+  padding: 6px 4px;
+}
+
+.mobile-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  /* Apple's floor for anything a finger has to hit. */
+  min-height: 44px;
+  padding: 4px 2px;
+  border: none;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  /* A tab is a place to go, so the browser's own text selection and the long
+     press that offers it are both in the way. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-tab[aria-selected="true"] {
+  color: var(--accent);
+}
+
+.mobile-tab-label {
+  line-height: 1.2;
+}

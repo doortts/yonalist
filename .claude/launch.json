@@ -4,14 +4,44 @@
     {
       "name": "yonalist-desktop",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "apps/yonalist", "--", "--port", "1425"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "apps/yonalist",
+        "--",
+        "--port",
+        "1425"
+      ],
       "port": 1425
     },
     {
       "name": "yonalist-desktop-alt",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "apps/yonalist", "--", "--port", "1426"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "apps/yonalist",
+        "--",
+        "--port",
+        "1426"
+      ],
       "port": 1426
+    },
+    {
+      "name": "yonalist-mobile",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:mobile",
+        "--prefix",
+        "apps/yonalist",
+        "--",
+        "--port",
+        "1427"
+      ],
+      "port": 1427
     }
   ]
 }

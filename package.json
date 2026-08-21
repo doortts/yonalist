@@ -21,7 +21,9 @@
     "test:scripts": "vitest run --config vitest.config.ts",
     "test:performance": "cargo test -p notes-sqlite --release --features bench-fixtures --test performance -- --nocapture",
     "test:plans": "node scripts/checkHistoricalPlanReconciliation.mjs",
-    "test:all": "cargo test --workspace && npm test && npm run lint && npm run test:architecture && npm run test:contracts && npm run test:bundle && npm run test:scripts"
+    "test:all": "cargo test --workspace && npm test && npm run lint && npm run test:architecture && npm run test:contracts && npm run test:bundle && npm run test:scripts",
+    "dev:mobile": "npm run dev:mobile --prefix apps/yonalist",
+    "build:mobile": "npm run build:mobile --prefix apps/yonalist"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
