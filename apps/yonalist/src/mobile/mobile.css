@@ -268,3 +268,61 @@
   min-height: 44px;
   align-items: center;
 }
+
+/* Lists — pages, and anything else that is a column of things to open. */
+.mobile-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.mobile-list-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-card);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-empty {
+  color: var(--text-3);
+  font-size: 15px;
+  padding: 8px 2px;
+  margin: 0;
+}
+
+.mobile-search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 11px;
+  background: var(--bg-card);
+  color: var(--text-3);
+}
+
+.mobile-search-field {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  /* 16px or iOS zooms the page the moment the field takes focus. */
+  font-size: 16px;
+}
+
+.mobile-search-field:focus {
+  outline: none;
+}

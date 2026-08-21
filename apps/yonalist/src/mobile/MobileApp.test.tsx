@@ -36,7 +36,38 @@ describe("MobileApp", () => {
     await user.click(within(sections()).getByRole("tab", { name: "Pages" }));
 
     expect(within(sections()).getByRole("tab", { selected: true })).toHaveTextContent("Pages");
-    expect(screen.getByRole("heading", { name: "Pages" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Today" })).not.toBeInTheDocument();
+    // Each section shows what it is about rather than its own name: Pages is
+    // the list of them, and the day that was on screen is gone.
+    expect(screen.getByRole("button", { name: "Today" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+  });
+});
+
+describe("MobileApp sections", () => {
+  it("shows each section's own screen, not a placeholder", async () => {
+    const user = userEvent.setup();
+    render(<MobileApp api={appApi()} />);
+    const tab = (name: string) =>
+      within(sections()).getByRole("tab", { name });
+
+    await user.click(tab("Journals"));
+    expect(screen.getByText(/nothing written on any day yet/i)).toBeInTheDocument();
+
+    await user.click(tab("Pages"));
+    expect(screen.getByRole("button", { name: "Today" })).toBeInTheDocument();
+
+    await user.click(tab("Search"));
+    expect(screen.getByRole("searchbox", { name: /search/i })).toBeInTheDocument();
+  });
+
+  it("opens a page from the list and offers the way back", async () => {
+    const user = userEvent.setup();
+    render(<MobileApp api={appApi()} />);
+    await user.click(within(sections()).getByRole("tab", { name: "Pages" }));
+
+    await user.click(screen.getByRole("button", { name: "Today" }));
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Today");
+    expect(screen.getByRole("button", { name: /back to pages/i })).toBeInTheDocument();
   });
 });
