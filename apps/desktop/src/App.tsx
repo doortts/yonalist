@@ -1,5 +1,6 @@
 import {
-  CalendarDays, House, Minus, NotebookText, Plus, Search, Settings
+  CalendarDays, ChevronRight, House, Minus, NotebookText, Plus, Search,
+  Settings
 } from "lucide-react";
 import {
   lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState,
@@ -999,93 +1000,118 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
               className="notes-navigation-section notes-navigation-journals"
               aria-labelledby="journals-title"
             >
-              <h2 id="journals-title" className="eyebrow">Journals</h2>
-              <div className="notes-library-list">
-                <div
-                  className="notes-library-page-row"
-                  data-active={openJournalDate === localDateIso()
-                    ? "true"
-                    : undefined}
-                >
-                  <button
-                    className="notes-library-page"
-                    type="button"
-                    aria-current={openJournalDate === localDateIso()
-                      ? "page"
+              <details className="notes-navigation-fold" open>
+                <summary className="notes-navigation-fold-summary">
+                  <ChevronRight
+                    className="notes-navigation-fold-chevron"
+                    size={14}
+                    aria-hidden="true"
+                  />
+                  <h2 id="journals-title" className="eyebrow">Journals</h2>
+                </summary>
+                <div className="notes-library-list">
+                  <div
+                    className="notes-library-page-row"
+                    data-active={openJournalDate === localDateIso()
+                      ? "true"
                       : undefined}
-                    aria-keyshortcuts="Meta+Shift+J Control+Shift+J"
-                    onClick={() => openJournalDay(localDateIso())}
                   >
-                    <CalendarDays size={16} aria-hidden="true" />
-                    <span>Today</span>
-                    <ShortcutHint mac="⌘⇧J" other="Ctrl+Shift+J" />
-                  </button>
-                </div>
-                <div
-                  className="notes-library-page-row"
-                  data-active={feedOpen ? "true" : undefined}
-                >
-                  <button
-                    className="notes-library-page"
-                    type="button"
-                    aria-current={feedOpen ? "page" : undefined}
-                    onClick={openJournals}
+                    <button
+                      className="notes-library-page"
+                      type="button"
+                      aria-current={openJournalDate === localDateIso()
+                        ? "page"
+                        : undefined}
+                      aria-keyshortcuts="Meta+Shift+J Control+Shift+J"
+                      onClick={() => openJournalDay(localDateIso())}
+                    >
+                      <CalendarDays size={16} aria-hidden="true" />
+                      <span>Today</span>
+                      <ShortcutHint mac="⌘⇧J" other="Ctrl+Shift+J" />
+                    </button>
+                  </div>
+                  <div
+                    className="notes-library-page-row"
+                    data-active={feedOpen ? "true" : undefined}
                   >
-                    <NotebookText size={16} aria-hidden="true" />
-                    <span>Journals</span>
-                  </button>
+                    <button
+                      className="notes-library-page"
+                      type="button"
+                      aria-current={feedOpen ? "page" : undefined}
+                      onClick={openJournals}
+                    >
+                      <NotebookText size={16} aria-hidden="true" />
+                      <span>Journals</span>
+                    </button>
                 </div>
               </div>
-              <Suspense
-                fallback={<div className="notes-journal-calendar-placeholder" />}
-              >
-                <JournalCalendar
-                  days={allJournalDays}
-                  today={localDateIso()}
-                  openDate={openJournalDate}
-                  onOpenDay={openJournalDay}
-                />
-              </Suspense>
+                <Suspense
+                  fallback={
+                    <div className="notes-journal-calendar-placeholder" />
+                  }
+                >
+                  <JournalCalendar
+                    days={allJournalDays}
+                    today={localDateIso()}
+                    openDate={openJournalDate}
+                    onOpenDay={openJournalDay}
+                  />
+                </Suspense>
+              </details>
             </section>
             <section
               className="notes-navigation-section notes-navigation-pages"
               aria-labelledby="pages-title"
             >
-              <h2 id="pages-title" className="eyebrow">Pages</h2>
-              <div className="notes-library-list">
+              <details className="notes-navigation-fold" open>
+                <summary className="notes-navigation-fold-summary">
+                  <ChevronRight
+                    className="notes-navigation-fold-chevron"
+                    size={14}
+                    aria-hidden="true"
+                  />
+                  <h2 id="pages-title" className="eyebrow">Pages</h2>
+                  {/* The count is the rows the list draws, so journal days are
+                      out of it the way they are out of the list itself. */}
+                  <span className="notes-navigation-fold-count">
+                    {pageRows.length}
+                  </span>
+                </summary>
+                <div className="notes-library-list">
                 {/* Home is the root page and no page's row, so the list leads
                     with its own entry instead of one from state.pages. It also
-                    stays put while a filtered view or a search is on, since it
-                    is the way back out of both. */}
-                <div
-                  className="notes-library-page-row"
-                  data-active={atAllPages ? "true" : undefined}
-                >
-                  <button
-                    className="notes-library-page"
-                    type="button"
-                    aria-current={atAllPages ? "page" : undefined}
-                    aria-keyshortcuts="Meta+0 Control+0"
-                    onClick={openAllPages}
+                      stays put while a filtered view or a search is on, since it
+                      is the way back out of both. */}
+                  <div
+                    className="notes-library-page-row"
+                    data-active={atAllPages ? "true" : undefined}
                   >
-                    <House size={16} aria-hidden="true" />
-                    <span>All</span>
-                    <ShortcutHint mac="⌘0" other="Ctrl+0" />
-                  </button>
+                    <button
+                      className="notes-library-page"
+                      type="button"
+                      aria-current={atAllPages ? "page" : undefined}
+                      aria-keyshortcuts="Meta+0 Control+0"
+                      onClick={openAllPages}
+                    >
+                      <House size={16} aria-hidden="true" />
+                      <span>All</span>
+                      <ShortcutHint mac="⌘0" other="Ctrl+0" />
+                    </button>
+                  </div>
+                  {pageRowsListed &&
+                    pageRows.map((page, place) => (
+                      <LibraryPageRow
+                        key={page.id}
+                        page={page}
+                        place={place < 9 ? place + 1 : undefined}
+                        active={page.id === currentPageId}
+                        store={store}
+                        onOpen={() => void openPage(page.id)}
+                        onDelete={() => deletePage(page.id)}
+                      />
+                    ))}
                 </div>
-                {pageRowsListed &&
-                  pageRows.map((page, place) => (
-                    <LibraryPageRow
-                      key={page.id}
-                      page={page}
-                      place={place < 9 ? place + 1 : undefined}
-                      active={page.id === currentPageId}
-                      store={store}
-                      onOpen={() => void openPage(page.id)}
-                      onDelete={() => deletePage(page.id)}
-                    />
-                  ))}
-              </div>
+              </details>
             </section>
             <section
               className="notes-navigation-section notes-navigation-library"

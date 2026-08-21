@@ -422,6 +422,50 @@
   border-top: 1px solid var(--border);
 }
 
+/* Journals and Pages fold at their own header. `details` owns the open state
+   and the keyboard, so the summary only has to look like the eyebrow row it
+   took the place of -- and lose the disclosure triangle the browser draws for
+   it, since the chevron beside the title is the mark this list uses. */
+.notes-navigation-fold-summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 4px 6px;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  list-style: none;
+  cursor: default;
+}
+
+.notes-navigation-fold-summary::-webkit-details-marker {
+  display: none;
+}
+
+.notes-navigation-fold-summary:hover {
+  background: var(--list-hover-bg);
+}
+
+.notes-navigation-fold-chevron {
+  flex: none;
+  color: var(--text-3);
+}
+
+.notes-navigation-fold[open] > .notes-navigation-fold-summary
+  > .notes-navigation-fold-chevron {
+  transform: rotate(90deg);
+}
+
+.notes-navigation-fold-count {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-active);
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
 /* The list is a stack of rows with nothing between them, so a hint hung below
    one would sit on the next row's face -- and while the modifier is held every
    row has one. Theirs rides the row's own trailing edge instead. */
@@ -3036,6 +3080,7 @@ body.is-outline-dragging * {
 .notes-node :focus-visible,
 .notes-breadcrumb-button:focus-visible,
 .notes-library-page:focus-visible,
+.notes-navigation-fold-summary:focus-visible,
 .notes-library-discovery button:focus-visible,
 .notes-library-icon-button:focus-visible,
 .notes-export-trigger:focus-visible,

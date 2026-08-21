@@ -86,6 +86,32 @@ describe("the Journals section of the sidebar", () => {
     expect(await screen.findByDisplayValue("Ideas")).toBeTruthy();
   });
 
+  it("folds a section away at its header and back", async () => {
+    render(<App api={journalApi()} />);
+    await screen.findByDisplayValue("Reading list");
+
+    const pages = sidebar().getByRole("region", { name: "Pages" });
+    const header = within(pages).getByText("Pages");
+    const fold = header.closest("details");
+
+    expect(fold?.open).toBe(true);
+    fireEvent.click(header);
+    expect(fold?.open).toBe(false);
+    fireEvent.click(header);
+    expect(fold?.open).toBe(true);
+  });
+
+  it("counts the listed pages beside the Pages header", async () => {
+    render(<App api={journalApi()} />);
+    await screen.findByDisplayValue("Reading list");
+
+    const pages = sidebar().getByRole("region", { name: "Pages" });
+
+    // Two named pages and one journal day: the journal has no row, so it is
+    // not in the count either.
+    expect(within(pages).getByText("2")).toBeTruthy();
+  });
+
   it("opens today from the Journals section", async () => {
     render(<App api={journalApi()} />);
     await screen.findByDisplayValue("Reading list");
