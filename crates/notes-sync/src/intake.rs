@@ -49,19 +49,54 @@ pub fn flags_say_dataless(st_flags: u32) -> bool {
     st_flags & SF_DATALESS != 0
 }
 
-/// Whether this file's bytes have not been brought down yet. Only worth asking
-/// once a read has already failed: a read that succeeds is what fetches them.
-#[cfg(target_os = "macos")]
-pub(crate) fn is_dataless(facts: &std::fs::Metadata) -> bool {
-    use std::os::macos::fs::MetadataExt;
-    flags_say_dataless(facts.st_flags())
+/// Whether this build can tell an evicted iCloud file from a present one, and
+/// the reading that answers it.
+///
+/// Kept in one place per platform so the two cannot drift: a build that stops
+/// reading the flag also stops claiming it does, and the claim is what the
+/// reach test asserts. iCloud evicts on iOS as surely as on macOS — more
+/// eagerly, since a phone has less room to keep things in — so both read it,
+/// through the `darwin` module both share.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod evicted {
+    /// Whether this file's bytes have not been brought down yet. Only worth
+    /// asking once a read has already failed: on macOS a read that succeeds is
+    /// what fetches them, and on iOS a read that fails is the only sign.
+    pub(crate) fn is_dataless(facts: &std::fs::Metadata) -> bool {
+        use std::os::darwin::fs::MetadataExt;
+        super::flags_say_dataless(facts.st_flags())
+    }
+
+    pub(crate) const READS_THE_FLAG: bool = true;
 }
 
 /// Only iCloud leaves a file in this state, and only on Apple's filesystems.
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn is_dataless(_facts: &std::fs::Metadata) -> bool {
-    false
+/// Answering yes anywhere else would refuse writes for a reason that cannot
+/// happen there.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+mod evicted {
+    pub(crate) fn is_dataless(_facts: &std::fs::Metadata) -> bool {
+        false
+    }
+
+    pub(crate) const READS_THE_FLAG: bool = false;
 }
+
+pub(crate) use evicted::is_dataless;
+
+/// Whether this build reads the eviction flag at all. `false` means every file
+/// looks present, and an export would write over one whose bytes are still in
+/// the cloud.
+pub const READS_DATALESS_FLAG: bool = evicted::READS_THE_FLAG;
+
+/// An Apple build that cannot see the flag would write over files whose bytes
+/// are still in the cloud, and it would do it silently. Checked here rather
+/// than in a test because the test would have to run on the device to say
+/// anything, and nothing runs tests there — this refuses to compile instead.
+const _: () = assert!(
+    READS_DATALESS_FLAG || !cfg!(any(target_os = "macos", target_os = "ios")),
+    "iCloud evicts files on every Apple platform, so every Apple build has to read the flag"
+);
 
 /// After a watch event, with the file already hashed.
 pub fn watch_verdict(known: Option<&Known>, file_hash: &str) -> Verdict {

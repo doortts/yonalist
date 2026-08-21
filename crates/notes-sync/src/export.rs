@@ -202,7 +202,16 @@ fn existing_at(vault_root: &Path, path: &Path) -> Existing {
         return Existing::Bytes(hash_bytes(&bytes));
     }
     match std::fs::symlink_metadata(path) {
-        Ok(facts) if crate::intake::is_dataless(&facts) => Existing::NotLocal,
+        Ok(facts) if crate::intake::is_dataless(&facts) => {
+            // macOS brings the bytes down by being read, so reaching here at
+            // all means the read failed and asking again is the retry. iOS
+            // never fetches on a read, so the asking has to be explicit or the
+            // file stays away forever and this document is never written. The
+            // answer is only that the request was accepted; the bytes land
+            // later and the next pass finds them.
+            crate::icloud::fetch(path);
+            Existing::NotLocal
+        }
         // Nothing there, or something there this app was never willing to
         // replace by reading it — too large, a link, a fifo. Both answered the
         // way they always were.
