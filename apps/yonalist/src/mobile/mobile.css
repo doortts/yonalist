@@ -217,3 +217,33 @@
   user-select: none;
   touch-action: manipulation;
 }
+
+/* The outline's bullet is 16 by 6 and its checkbox 17 square. Those are the
+   right sizes to look at and the wrong sizes to press, so the phone widens
+   what they answer to without redrawing them: an overlay reaches out from each
+   to Apple's 44 point floor, staying inside the 44 point row so two rows never
+   claim the same touch. Scoped to the phone shell, so the desktop keeps its
+   pointer-sized targets. */
+.mobile-app .notes-node-bullet {
+  position: relative;
+  /* A vertical drag on the handle is the app's, not the browser's: without
+     this the page scrolls and the drag dies as a pointercancel. */
+  touch-action: none;
+}
+
+.mobile-app .notes-node-bullet::after {
+  content: "";
+  position: absolute;
+  inset: -19px -14px;
+}
+
+.mobile-app .notes-todo-checkbox {
+  position: relative;
+  touch-action: manipulation;
+}
+
+.mobile-app .notes-todo-checkbox::after {
+  content: "";
+  position: absolute;
+  inset: -14px;
+}
