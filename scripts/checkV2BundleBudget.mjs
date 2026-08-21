@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 
 const root = resolve(import.meta.dirname, "..");
-const dist = join(root, "apps", "desktop", "dist");
+const dist = join(root, "apps", "yonalist", "dist");
 const manifestPath = join(dist, ".vite", "manifest.json");
 if (!existsSync(manifestPath)) {
   throw new Error("v2 bundle manifest is missing; run npm run v2:build first");

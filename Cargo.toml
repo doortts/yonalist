@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "apps/desktop/src-tauri",
+  "apps/yonalist/src-tauri",
   "crates/notes-application",
   "crates/notes-core",
   "crates/notes-export",

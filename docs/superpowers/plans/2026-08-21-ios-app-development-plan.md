@@ -54,27 +54,48 @@ Pointer Events다. `useOutlineDrag.ts:153-158`이 `pointermove`/`pointerup`/
 
 ## 2. 구조 결정
 
-**프런트엔드는 별도 진입점, 코드는 직접 import.** `apps/desktop/src/mobile/`에
-모바일 셸을 두고 `index.mobile.html` → `src/mobile/main.tsx`를 Vite 진입점으로
-추가한다. 공유 모듈은 상대 경로로 그냥 가져다 쓴다.
+**한 앱, 네 플랫폼.** `apps/desktop`을 `apps/yonalist`로 바꿨다. Windows와 Linux는
+새 셸이 아니라 데스크톱 셸의 새 빌드 타깃이고(`Cargo.toml`에 `cfg(windows)`
+의존성이, single-instance에 `cfg(any(macos, windows, linux))`가 이미 있다), iOS는
+같은 `src-tauri`에서 나온다. OS마다 폴더를 파면 `apps/windows`가 `apps/desktop`과
+99% 같은 것이 된다. 진짜 갈리는 축은 데스크톱 셸 대 모바일 셸 하나뿐이다.
 
-버린 것: ① 런타임 분기 하나로 한 번들에 다 넣기 — 데스크톱 번들이 358KiB raw /
-109KiB gzip 예산에 이미 붙어 있어서(`scripts/checkV2BundleBudget.mjs:111-112`)
-모바일 셸을 얹으면 그 자리에서 터진다. ② 공유 코드를 `packages/`로 추출 —
-파일 100개를 옮기는 리팩터링이고, 지금 얻는 것은 이름이 예뻐지는 것뿐이다.
-`apps/desktop`이 모바일 코드를 담는 이름값 문제는 남지만, 옮기는 값이 이름값보다
-크다. 나중에 진짜 갈라질 이유가 생기면 그때 옮긴다.
+```
+apps/yonalist/
+  index.html          → src/main.tsx         (mac · windows · linux) → dist/
+  index.mobile.html   → src/mobile/main.tsx  (ios)                   → dist-mobile/
+  src/
+    notesStore.ts  outline/  journal.ts  preview/  …   ← 공유. 옮기지 않는다
+    mobile/                                            ← 모바일 셸만 새로
+  src-tauri/          ← 하나. tauri.ios.conf.json이 iOS 값만 덮는다. gen/apple도 여기
+```
 
-**Rust는 크레이트 하나, iOS 설정만 덧댄다.** `apps/desktop/src-tauri` 하나로
-데스크톱과 iOS를 다 빌드하고, iOS 전용 값은 `tauri.ios.conf.json`으로 덮는다.
-데스크톱 전용 코드는 이미 `cfg` 게이트가 있는 것(`tauri-plugin-single-instance`)
-외에 창 생성·vault 폴더 선택·내보내기 대화상자를 새로 게이트한다.
+**경계는 폴더가 아니라 진입점이다.** 데스크톱 진입점이 타고 들어가는 것이 데스크톱
+번들이고, 번들러가 그것을 강제하고 예산 게이트가 증명한다. 그래서 데스크톱 전용
+파일 25개를 `src/desktop/`으로 옮기지 않는다 — 얻는 것은 이름 정돈뿐인데 테스트
+105개의 import가 따라 움직이고, Windows/Linux는 세 번째 셸을 가져오지 않으므로 그
+압력도 오지 않는다.
+
+**`dist`는 반드시 가른다.** `checkV2BundleBudget.mjs:120`이 `dist/assets/`의 모든
+`.js`를 훑어 프리뷰 코드 유출을 잡으므로, 두 진입점이 같은 `dist`를 쓰면 이 검사가
+남의 청크를 같이 본다. 모바일은 `dist-mobile`로 내보내고 예산 줄도 따로 둔다.
+
+**버린 것:** ① 런타임 분기 하나로 한 번들 — 데스크톱이 357.2KB/358KB라 얹는 즉시
+터진다. ② 공유 코드를 `packages/`로 추출 — 파일 100개를 옮기는 리팩터링이고 지금
+얻는 것이 없다. ③ Tauri 프로젝트를 둘로 — 명령 33개 × 등록처 4곳이 통째로 복제된다.
+
+**절대 안 바꾼 것:** `tauri.conf.json`의 `identifier`(`com.doortts.yonalist.v2`).
+앱 데이터 디렉터리와 iCloud 컨테이너 이름이 여기서 나온다. 폴더 이름 정리하다 같이
+손대면 기존 vault가 미아가 된다.
 
 **Vault는 두 걸음으로 간다.** 먼저 앱의 로컬 `Documents/`로 앱 전체를 완성하고,
-그 다음 iCloud 컨테이너로 옮긴다. iCloud 권한이 유료 계정을 요구하기 때문이다
-(아래 4절). 로컬 단계에서도 `UIFileSharingEnabled`와
+그 다음 iCloud 컨테이너로 옮긴다. 로컬 단계에서도 `UIFileSharingEnabled`와
 `LSSupportsOpeningDocumentsInPlace`를 켜면 파일 앱에서 vault가 보이므로 손으로
 넣고 빼며 확인할 수 있다.
+
+**CI는 아직 한 플랫폼이다.** `.github/workflows/ci.yml`이 `ubuntu-latest` 단독이고
+매트릭스가 없다. macOS 러너가 없으니 iOS 빌드는 지금 CI에서 돌지 못한다.
+Windows/Linux를 붙일 때도 같은 작업이므로 플랫폼 매트릭스는 별도 항목으로 잡는다.
 
 ## 3. 검증 방식
 

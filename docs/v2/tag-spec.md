@@ -10,13 +10,13 @@ SQLite가 본문에서 다시 뽑아 `notes_tags`를 채운다. 태그를 고치
 
 | 조각 | 자리 |
 |---|---|
-| 프론트 토크나이저 | [outlinePresentation.ts:170](../../apps/desktop/src/outlinePresentation.ts#L170) `matchTag` |
+| 프론트 토크나이저 | [outlinePresentation.ts:170](../../apps/yonalist/src/outlinePresentation.ts#L170) `matchTag` |
 | Rust 토크나이저 | [mutations.rs:285](../../crates/notes-sqlite/src/mutations.rs#L285) `derived_tags` |
 | 인덱스 | [schema.rs:166](../../crates/notes-sqlite/src/schema.rs#L166) `notes_tags(node_id, token, display_tag)` |
 | 검색 필터 | [queries.rs:206](../../crates/notes-sqlite/src/queries.rs#L206) `is:tagged`, [:213](../../crates/notes-sqlite/src/queries.rs#L213) `tag:` |
-| 토큰 렌더 | [OutlineTextField.tsx:133](../../apps/desktop/src/OutlineTextField.tsx#L133) |
-| 클릭 처리 | [App.tsx:337](../../apps/desktop/src/App.tsx#L337) `handleTagClick` |
-| 일괄 추가·제거 | [OutlineTagChooser.tsx](../../apps/desktop/src/OutlineTagChooser.tsx), [outlineTagEdits.ts](../../apps/desktop/src/outlineTagEdits.ts) |
+| 토큰 렌더 | [OutlineTextField.tsx:133](../../apps/yonalist/src/OutlineTextField.tsx#L133) |
+| 클릭 처리 | [App.tsx:337](../../apps/yonalist/src/App.tsx#L337) `handleTagClick` |
+| 일괄 추가·제거 | [OutlineTagChooser.tsx](../../apps/yonalist/src/OutlineTagChooser.tsx), [outlineTagEdits.ts](../../apps/yonalist/src/outlineTagEdits.ts) |
 
 토크나이저 두 벌은 같은 규칙을 따른다. 경계 문자 뒤에서는 시작하지 않는다. 첫 글자는
 문자·숫자·`_`여야 하고 몸통은 문자·숫자·`_`·`-`와 결합 문자까지 받는다. 저장 키는 NFC 후
@@ -42,11 +42,11 @@ SQLite가 본문에서 다시 뽑아 `notes_tags`를 채운다. 태그를 고치
 
 | 항목 | Workflowy | 지금 v2 |
 |---|---|---|
-| 입력 자동완성 | `#` 즉시 | 없음. `/`만 [SlashCommandMenu](../../apps/desktop/src/SlashCommandMenu.tsx)를 띄운다 |
+| 입력 자동완성 | `#` 즉시 | 없음. `/`만 [SlashCommandMenu](../../apps/yonalist/src/SlashCommandMenu.tsx)를 띄운다 |
 | 클릭 결과 | 제자리 필터 | 사이드바 검색창에 `tag:#x`를 넣고 평평한 결과 목록을 띄운다. 결과를 누르면 페이지로 떠난다 |
 | 여러 태그 | 공백 AND, `OR`, `-` 제외 | 토큰 하나뿐. `tag:` 필터는 정확히 한 개만 받는다 |
-| 활성 표시 | 누른 태그가 켜져 보인다 | `aria-pressed="false"` 고정 ([OutlineTextField.tsx:139](../../apps/desktop/src/OutlineTextField.tsx#L139)) |
-| 태그 목록 | 검색창이 대신한다 | Library의 `Tags`는 `is:tagged`, 곧 태그 달린 행 전부다 ([LibraryViewButtons.tsx:10](../../apps/desktop/src/LibraryViewButtons.tsx#L10)) |
+| 활성 표시 | 누른 태그가 켜져 보인다 | `aria-pressed="false"` 고정 ([OutlineTextField.tsx:139](../../apps/yonalist/src/OutlineTextField.tsx#L139)) |
+| 태그 목록 | 검색창이 대신한다 | Library의 `Tags`는 `is:tagged`, 곧 태그 달린 행 전부다 ([LibraryViewButtons.tsx:10](../../apps/yonalist/src/LibraryViewButtons.tsx#L10)) |
 | 후보 출처 | 문서 전체 | 클라이언트가 이미 들고 있는 노드뿐. 아직 안 읽은 곳의 태그는 목록에서 빠진다 |
 | 개수 | — | 없음. 구 앱에는 `NoteTagSummary.count`가 있었다 ([notes.ts:282](../../src/domain/notes.ts#L282)) |
 
@@ -66,7 +66,7 @@ SQLite가 본문에서 다시 뽑아 `notes_tags`를 채운다. 태그를 고치
 - **넣기**: Enter와 Tab이 후보의 저장된 철자를 넣고 뒤에 공백 하나를 붙인다. 새 태그를 만드는
   중이라면 목록이 비고 그대로 계속 치면 된다.
 - **닫기**: Esc, 공백, 태그로 쓸 수 없는 글자, 캐럿이 토큰 밖으로 나가는 이동.
-- **한글 입력**: `event.nativeEvent.isComposing`과 `key === "Process"`를 [OutlineTagChooser.tsx:90](../../apps/desktop/src/OutlineTagChooser.tsx#L90)과 같은 자리에서 막는다.
+- **한글 입력**: `event.nativeEvent.isComposing`과 `key === "Process"`를 [OutlineTagChooser.tsx:90](../../apps/yonalist/src/OutlineTagChooser.tsx#L90)과 같은 자리에서 막는다.
   조합 중의 Enter는 후보를 고르지 않는다.
 - **자리**: 슬래시 메뉴와 같은 앵커 규칙을 쓰고 첫 페인트 번들에서 빠지도록 첫 열림에 로드한다.
 
@@ -119,10 +119,10 @@ ORDER BY count DESC, token
 
 ### 4.7 일괄 편집기는 남는다
 
-[OutlineTagChooser](../../apps/desktop/src/OutlineTagChooser.tsx)의 Add/Remove는 여러 행에 한 번에
+[OutlineTagChooser](../../apps/yonalist/src/OutlineTagChooser.tsx)의 Add/Remove는 여러 행에 한 번에
 거는 도구라 자동완성과 겹치지 않는다. 후보 출처만 4.5의 워크스페이스 목록으로 바꾼다. 한 번에
 128행이라는 상한은 undo 한 칸을 지키는 값이라 그대로 둔다
-([outlineTagEdits.ts:39](../../apps/desktop/src/outlineTagEdits.ts#L39)).
+([outlineTagEdits.ts:39](../../apps/yonalist/src/outlineTagEdits.ts#L39)).
 
 ### 4.8 뒤로 미루는 것
 
@@ -131,7 +131,7 @@ ORDER BY count DESC, token
 ## 5. 시각 변경은 따로 정해야 한다
 
 Workflowy는 태그를 알약으로 그리지만 v2는 밑줄만 긋는다
-([notes.css:1348](../../apps/desktop/src/notes.css#L1348)). 여기서 알약으로 바꾸는 일은
+([notes.css:1348](../../apps/yonalist/src/notes.css#L1348)). 여기서 알약으로 바꾸는 일은
 [current-app-differences.md](current-app-differences.md)가 세운 원칙 — v2는 현행 앱의
 `styles.css` / `notes.css` / 클래스 이름 / 색 토큰을 그대로 복사하고 겉모습은 차이로 두지
 않는다 — 과 정면으로 부딪힌다.

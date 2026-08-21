@@ -72,7 +72,7 @@ function sourceFiles(directory, extensions) {
 
 const v2Sources = [
   ...sourceFiles(join(root, "crates"), [".rs"]),
-  ...sourceFiles(join(root, "apps", "desktop", "src"), [".ts", ".tsx"])
+  ...sourceFiles(join(root, "apps", "yonalist", "src"), [".ts", ".tsx"])
 ];
 for (const path of v2Sources) {
   const lines = readFileSync(path, "utf8").split(/\r?\n/).length;
@@ -85,7 +85,7 @@ for (const path of v2Sources) {
   }
 }
 
-const frontendSources = sourceFiles(join(root, "apps", "desktop", "src"), [".ts", ".tsx"]);
+const frontendSources = sourceFiles(join(root, "apps", "yonalist", "src"), [".ts", ".tsx"]);
 const frontendSet = new Set(frontendSources.map((path) => resolve(path)));
 const dependencyGraph = new Map();
 for (const path of frontendSources) {
@@ -147,7 +147,7 @@ const expectedCommands = [
   "notes_sync_forget_conflict"
 ].sort();
 const tauriSource = readFileSync(
-  join(root, "apps", "desktop", "src-tauri", "src", "lib.rs"),
+  join(root, "apps", "yonalist", "src-tauri", "src", "lib.rs"),
   "utf8"
 );
 const actualCommands = [...tauriSource.matchAll(/#\[tauri::command\]\s+async fn (notes_[a-z_]+)/gu)]
@@ -172,8 +172,8 @@ const handlerCommands = handlerBlock[1]
   .filter((entry) => /^[a-z_]+$/u.test(entry ?? ""))
   .sort();
 for (const [label, path] of [
-  ["permission allow-list", ["apps", "desktop", "src-tauri", "permissions", "main-window.toml"]],
-  ["build.rs app manifest", ["apps", "desktop", "src-tauri", "build.rs"]]
+  ["permission allow-list", ["apps", "yonalist", "src-tauri", "permissions", "main-window.toml"]],
+  ["build.rs app manifest", ["apps", "yonalist", "src-tauri", "build.rs"]]
 ]) {
   const source = readFileSync(join(root, ...path), "utf8");
   const declared = new Set(
@@ -188,7 +188,7 @@ for (const [label, path] of [
 }
 
 const mainWindowCapability = JSON.parse(readFileSync(
-  join(root, "apps", "desktop", "src-tauri", "capabilities", "default.json"),
+  join(root, "apps", "yonalist", "src-tauri", "capabilities", "default.json"),
   "utf8"
 ));
 const requiredPermissions = [

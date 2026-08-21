@@ -9,7 +9,7 @@ export default [
     ignores: ["node_modules", "dist", "docs", ".worktrees"],
   },
   {
-    files: ["apps/desktop/src/**/*.{ts,tsx}"],
+    files: ["apps/yonalist/src/**/*.{ts,tsx}"],
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {

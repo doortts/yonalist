@@ -4,14 +4,14 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "apps/desktop",
+    "apps/yonalist",
     "packages/contracts"
   ],
   "scripts": {
-    "dev": "npm run dev --prefix apps/desktop",
-    "build": "npm run build --prefix apps/desktop",
-    "test": "npm run test --prefix apps/desktop",
-    "lint": "eslint apps/desktop/src",
+    "dev": "npm run dev --prefix apps/yonalist",
+    "build": "npm run build --prefix apps/yonalist",
+    "test": "npm run test --prefix apps/yonalist",
+    "lint": "eslint apps/yonalist/src",
     "tauri": "node scripts/tauriV2.mjs",
     "tauri:dev": "node scripts/tauriV2.mjs dev",
     "tauri:build": "node scripts/tauriV2.mjs build",

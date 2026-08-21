@@ -16,7 +16,7 @@ fn id(value: &str) -> NodeId {
 
 fn font_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../apps/desktop/src-tauri/resources/NanumGothic-Regular.ttf")
+        .join("../../apps/yonalist/src-tauri/resources/NanumGothic-Regular.ttf")
 }
 
 fn text_node(id_value: &str, text: impl Into<String>, note: impl Into<String>) -> ExportNode {

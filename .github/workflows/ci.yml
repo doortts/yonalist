@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # cargo test --workspace builds apps/desktop/src-tauri, so the whole
+      # cargo test --workspace builds apps/yonalist/src-tauri, so the whole
       # webkit2gtk/gtk link surface has to be present even though no test opens
       # a window. Every native -sys crate the v2 workspace resolves is a subset
       # of what v1 links, so this list stays in step with ci-v1.yml.
@@ -27,8 +27,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Root install covers the apps/desktop and packages/contracts workspaces;
-      # apps/desktop/node_modules holds only vite's cache, never packages.
+      # Root install covers the apps/yonalist and packages/contracts workspaces;
+      # apps/yonalist/node_modules holds only vite's cache, never packages.
       - run: npm ci
       # One step on purpose: whatever `test:all` covers is what CI covers, so a
       # check cannot rot by being left out of the composite.

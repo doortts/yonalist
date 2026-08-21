@@ -5970,7 +5970,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "yonalist-v2-desktop"
+name = "yonalist"
 version = "0.2.0"
 dependencies = [
  "notes-application",

@@ -1,12 +1,12 @@
 [package]
-name = "yonalist-v2-desktop"
+name = "yonalist"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [lib]
-name = "yonalist_v2_desktop_lib"
+name = "yonalist_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]

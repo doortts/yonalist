@@ -3,7 +3,7 @@ import { delimiter, join, resolve } from "node:path";
 import { toolchainBinDir } from "./rustupToolchain.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const project = join(root, "apps", "desktop", "src-tauri");
+const project = join(root, "apps", "yonalist", "src-tauri");
 // Resolved from the project directory so `rust-toolchain.toml` picks the
 // toolchain, and put ahead of PATH so a separately installed `cargo`/`rustc`
 // cannot answer instead — an iOS build needs the targets that only the pinned

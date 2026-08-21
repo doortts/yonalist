@@ -26,7 +26,7 @@ Yonalist requires Rust 1.88 or later. `npm run tauri:dev` and
 `npm run tauri:build` use the repository-pinned rustup toolchain when rustup
 is installed.
 
-`npm run tauri:dev` starts the desktop app in `apps/desktop`. `npm run dev`
+`npm run tauri:dev` starts the desktop app in `apps/yonalist`. `npm run dev`
 serves its frontend alone against fixture data, at `http://127.0.0.1:1425/`.
 
 ```bash

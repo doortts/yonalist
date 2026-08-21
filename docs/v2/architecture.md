@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-  UI["apps/desktop\nReact shell + external store"] --> IPC["Tauri bounded-command adapters"]
+  UI["apps/yonalist\nReact shell + external store"] --> IPC["Tauri bounded-command adapters"]
   IPC --> APP["notes-application\ncommand/query + session history"]
   APP --> CORE["notes-core\npure tree invariants + reversible patches"]
   IPC --> SQLITE["notes-sqlite\ndedicated DB worker"]
@@ -77,8 +77,8 @@ per coalesced entry, and 4,096 idempotency receipts.
 | `crates/notes-core` | Node IDs/kinds, tree and image-metadata invariants, ordering, reversible commands |
 | `crates/notes-application` | IPC DTO source, storage/asset ports, revision/session/history authority |
 | `crates/notes-sqlite` | Schema v1, bounded queries, atomic mutations, FTS5, derived indexes, content-addressed image assets, DB worker |
-| `apps/desktop/src-tauri` | Fixed Notes API, bounded image/file actions, background startup, single-instance and close/optimize lifecycle |
-| `apps/desktop/src` | Current-design shell, confirmed model, draft overlay, pane sessions, interaction history, lazy image UI |
+| `apps/yonalist/src-tauri` | Fixed Notes API, bounded image/file actions, background startup, single-instance and close/optimize lifecycle |
+| `apps/yonalist/src` | Current-design shell, confirmed model, draft overlay, pane sessions, interaction history, lazy image UI |
 | `packages/contracts/generated` | `ts-rs` output; never edited by hand |
 
 Production files have an advisory 500-line limit, tests 800 lines, and crates have a
