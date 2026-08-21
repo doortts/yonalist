@@ -98,10 +98,12 @@ xcrun simctl create "iPhone 15 Pro" com.apple.CoreSimulator.SimDeviceType.iPhone
 
 ## 4. 미리 아는 막다른 길
 
-**iCloud 권한은 유료 개발자 계정이 필요하다.** 무료 Personal Team 프로비저닝은
-iCloud·푸시 같은 권한에 서명하지 못한다. 4단계 전에 Apple Developer Program
-가입이 필요하고, 안 되면 3단계까지가 v1이 된다. 0~3단계는 무료 팀으로 전부
-진행된다.
+**iCloud 권한은 유료 개발자 계정이 필요하다 — 갖추고 있다.** 무료 Personal Team
+프로비저닝은 iCloud·푸시 같은 권한에 서명하지 못하지만, 이 프로젝트는 Apple
+Developer Program 계정이 있으므로 4단계가 막히지 않는다. 남는 것은 계정 쪽
+준비물뿐이다: App ID에 iCloud 지원 켜기, iCloud 컨테이너
+(`iCloud.com.doortts.yonalist.v2`) 만들기, 그 컨테이너를 App ID에 물리기.
+0단계에서 서명이 되는지 먼저 확인해 두면 4단계에서 처음 부딪히지 않는다.
 
 **`notify`는 iOS에서 kqueue로 떨어진다.** `notify-8.2.0/src/lib.rs:413-421`이
 `target_os = "ios"`를 `KqueueWatcher`에 묶어 놨다. kqueue는 감시하는 파일마다
@@ -131,13 +133,37 @@ vault에서는 못 쓴다. 다행히 `vault_watch.rs:30`에 이미 60초마다 �
 
 | # | 항목 | 바뀌는 곳 | 실패 증거 | 완료 조건 |
 |---|---|---|---|---|
-| 0.1 | iOS 타깃 추가 + 코어 크레이트 크로스 컴파일 | 없음(도구) | `cargo build -p notes-sqlite --target aarch64-apple-ios-sim` 실패 | `rusqlite` bundled와 5개 코어 크레이트가 iOS 시뮬레이터 타깃으로 빌드된다 |
+| 0.1 | iOS 타깃 추가 + 코어 크레이트 크로스 컴파일 — **통과 (아래 증거)** | 없음(도구) | `cargo build -p notes-sqlite --target aarch64-apple-ios-sim`이 `can't find crate for core`로 실패 | `rusqlite` bundled와 5개 코어 크레이트가 iOS 시뮬레이터 타깃으로 빌드된다 |
+| 0.1b | `tauriV2.mjs`의 rustup 경로 탐지를 고친다 | `scripts/tauriV2.mjs` | 이 기계에서 `npm run tauri`가 Homebrew rust를 쓴다는 테스트 실패 | rustup이 어디에 깔려 있든 고정 툴체인을 쓴다 |
 | 0.2 | `[lib] crate-type` + `mobile_entry_point` | `src-tauri/Cargo.toml`, `src/lib.rs`, `src/main.rs` | `cargo build --target aarch64-apple-ios-sim` 링크 실패 | staticlib이 나오고 데스크톱 빌드가 그대로 통과한다 |
 | 0.3 | 데스크톱 전용 코드 `cfg` 게이트 | `lib.rs`(창 생성·vault 선택·내보내기), `vault_watch.rs` | iOS 타깃 컴파일 오류 | iOS 타깃이 컴파일되고 `cargo test --workspace`가 데스크톱에서 그대로 통과한다 |
 | 0.4 | `tauri ios init` + iOS 설정·아이콘 | `gen/apple/`, `tauri.ios.conf.json`, 아이콘 세트 | `tauri ios build --debug` 실패 | 빈 화면이라도 시뮬레이터에서 앱이 뜬다 |
 
 **단계 증거:** iPhone 15 Pro 시뮬레이터에서 앱이 실행되고, Rust 쪽 `notes_bootstrap`
 한 번이 응답한다. 이때 vault는 앱 로컬 `Documents/`다.
+
+#### 0.1 결과 (2026-08-21)
+
+**통과했다. 제일 큰 불확실성이 사라졌다.** `notes-core`·`notes-application`·
+`notes-sqlite`·`notes-sync`·`notes-export` 다섯 개가 `aarch64-apple-ios-sim`과
+`aarch64-apple-ios` 양쪽으로 빌드된다. `rusqlite`의 bundled SQLite C 코드도
+iOS 타깃으로 같이 컴파일됐다. 크레이트 쪽 코드는 한 줄도 고치지 않았다.
+
+가는 길에 이 기계의 툴체인 문제가 하나 드러났고, 이건 0.4에서 반드시 막는다.
+
+**`rustup target add`만으로는 안 된다.** PATH의 `cargo`/`rustc`가 rustup이 아니라
+Homebrew `rust` 포뮬러(`/opt/homebrew/bin`)이고, 그쪽 sysroot에는 호스트 타깃밖에
+없다. rustup은 Homebrew로 깔려 있어서 `~/.cargo/bin`이 아예 없다. 그래서
+`scripts/tauriV2.mjs:10`의 `existsSync(~/.cargo/bin/cargo)` 검사가 거짓이 되고,
+PATH 보정 없이 Homebrew rust로 떨어진다. 데스크톱은 호스트 타깃만 있으면 되니
+지금까지 티가 안 났지만, `tauri ios build`는 그 자리에서 죽는다. 0.1b가 이걸
+`rustup which cargo`로 푸는 항목이다.
+
+당장 빌드할 때는 툴체인 바이너리를 절대 경로로 부르면 된다:
+
+```bash
+~/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo build -p notes-sqlite --target aarch64-apple-ios-sim
+```
 
 ---
 
@@ -200,7 +226,7 @@ vault에서는 못 쓴다. 다행히 `vault_watch.rs:30`에 이미 60초마다 �
 
 ### 4단계 — iCloud
 
-유료 개발자 계정이 있어야 시작할 수 있다.
+계정 준비물(App ID의 iCloud 지원, 컨테이너 생성과 연결)이 먼저다.
 
 | # | 항목 | 바뀌는 곳 | 완료 조건 |
 |---|---|---|---|
