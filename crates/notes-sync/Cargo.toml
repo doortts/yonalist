@@ -43,6 +43,16 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 # already in the lock, so this adds two crates and touches no other target.
 [target.'cfg(target_os = "ios")'.dependencies]
 security-framework = "3.7.0"
+# The ubiquity container and the download request are plain Foundation on iOS,
+# which is why this needs no Swift either. Same crate the macOS side already
+# uses, with only the headers this file names.
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSError",
+    "NSFileManager",
+    "NSString",
+    "NSURL",
+] }
 
 [dev-dependencies]
 proptest = "1.9.0"
