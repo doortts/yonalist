@@ -7,7 +7,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
 import { App } from "./App";
 import { localDateIso } from "./outline/outlineSlash";
-import { ROOT_ID } from "./store/storeSupport";
+import { JOURNALS_ID, ROOT_ID } from "./store/storeSupport";
 import { appApi } from "./test/appApiFixture";
 
 const TODAY = localDateIso();
@@ -157,12 +157,17 @@ describe("the journal shortcut", () => {
 
     pressJournalShortcut();
 
+    // Three writes on a vault whose first day this is: the node every day
+    // hangs from, the day, then the row to type on.
     await waitFor(() => expect(
       commands(api).filter((command) => command.kind === "createNode")
-    ).toHaveLength(2));
-    const [page, row] = commands(api)
+    ).toHaveLength(3));
+    const [journals, page, row] = commands(api)
       .filter((command) => command.kind === "createNode");
-    expect(page).toMatchObject({ parent_id: ROOT_ID, text: TODAY });
+    expect(journals).toMatchObject({
+      id: JOURNALS_ID, parent_id: ROOT_ID, text: "Journals"
+    });
+    expect(page).toMatchObject({ parent_id: JOURNALS_ID, text: TODAY });
     expect(row).toMatchObject({ parent_id: page.id, text: "" });
   });
 });

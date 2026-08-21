@@ -10,7 +10,7 @@ import type { VaultChange } from "./syncChanged";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import {
-  freshId, messageFrom, ROOT_ID, VIEWPORT_LIMIT
+  freshId, JOURNALS_ID, messageFrom, ROOT_ID, VIEWPORT_LIMIT
 } from "./store/storeSupport";
 import { provisionalPage } from "./optimisticOutline";
 import { findJournalPage } from "./journal";
@@ -350,10 +350,10 @@ export class NotesStore {
    * has to leave nothing behind -- no row in the list, nothing to sync, nothing
    * to undo. `materializePage` below writes it as soon as anything does.
    */
-  async createPage(title = ""): Promise<string> {
+  async createPage(title = "", parentId = ROOT_ID): Promise<string> {
     const id = freshId();
     this.update({ provisionalPageId: id });
-    this.viewport.openLocalPage(id, provisionalPage(id, title));
+    this.viewport.openLocalPage(id, provisionalPage(id, title, parentId));
     return id;
   }
 
@@ -369,7 +369,7 @@ export class NotesStore {
       await this.openPage(existing.id);
       return existing.id;
     }
-    return this.createPage(date);
+    return this.createPage(date, JOURNALS_ID);
   }
 
   /**
@@ -395,20 +395,31 @@ export class NotesStore {
     // fails with it: writing into a page that was never created only earns a
     // second error. The creation itself comes back through here, and what it
     // must not wait on is itself, so the field below is emptied for the length
-    // of the call that sends it.
+    // of the calls that send it.
     if (this.creatingPageId === id) return this.pageCreation;
     this.creatingPageId = id;
+    // Where the page hangs was decided when it was opened and is carried on the
+    // page's own node: home for a New page, the Journals node for a day.
+    const openedAs = this.state.pageNode?.id === id ? this.state.pageNode : null;
+    const parentId = openedAs?.parentId ?? ROOT_ID;
     this.pageCreation = Promise.resolve();
-    this.pageCreation = this.commands.execute({
+    // Both commands are sent from here and neither is awaited in between. The
+    // queue behind `execute` is serial and takes them in the order they are
+    // handed to it, so the node is created before the day that names it -- and
+    // a page's creation has to be queued ahead of the command that asked for
+    // it, which is already waiting on this.
+    const parent = this.materializeParent(parentId);
+    const page = this.commands.execute({
       kind: "createNode",
       id,
-      parent_id: ROOT_ID,
+      parent_id: parentId,
       before_id: null,
       // Whatever the page was opened with, which is empty for a New page and
       // the date for a journal day. A title the reader has typed since is a
       // draft, and lands as its own update right behind this.
-      text: this.state.pageNode?.id === id ? this.state.pageNode.text : ""
-    }, null, false).then(() => {
+      text: openedAs?.text ?? ""
+    }, null, false);
+    this.pageCreation = Promise.all([parent, page]).then(() => {
       this.settleCreation(id);
       // The receipt has already put the row in the page list, so the pane
       // reads the page off the list from here on.
@@ -423,6 +434,29 @@ export class NotesStore {
     });
     return this.pageCreation;
   };
+
+  /**
+   * The Journals node, if that is what the page about to be written hangs from
+   * and the vault has never had one. It goes ahead of the page rather than with
+   * it: a day sent first would name a parent the backend has never heard of.
+   *
+   * One provisional page exists at a time, so two days cannot race here for the
+   * one node -- and the page list carries the answer the moment the creation
+   * lands, so a second day asks and finds it there.
+   */
+  private materializeParent(parentId: string): Promise<unknown> {
+    if (parentId !== JOURNALS_ID ||
+      this.state.pages.some((page) => page.id === JOURNALS_ID)) {
+      return Promise.resolve();
+    }
+    return this.commands.execute({
+      kind: "createNode",
+      id: JOURNALS_ID,
+      parent_id: ROOT_ID,
+      before_id: null,
+      text: "Journals"
+    }, null, false);
+  }
 
   /**
    * Only the creation that is still the one under way may declare it over: a
