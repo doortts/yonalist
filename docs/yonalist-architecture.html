@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yonalist v2 시스템 아키텍처 상세 분석 보고서</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0d14;
+      --bg-secondary: #111622;
+      --bg-tertiary: #182032;
+      --bg-card: rgba(22, 30, 48, 0.7);
+      --bg-card-hover: rgba(30, 42, 68, 0.85);
+      --border-color: #24314c;
+      --border-accent: #3b82f6;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-blue: #38bdf8;
+      --accent-indigo: #818cf8;
+      --accent-purple: #c084fc;
+      --accent-emerald: #34d399;
+      --accent-amber: #fbbf24;
+      --accent-rose: #fb7185;
+      --code-bg: #0d1117;
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 10px 30px -5px rgba(0, 0, 0, 0.6);
+      --glow-blue: 0 0 20px rgba(56, 189, 248, 0.2);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', 'Noto Sans KR', sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--bg-primary);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
+
+    /* Navigation Sidebar */
+    .layout {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      width: 280px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border-color);
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 1.75rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      flex-shrink: 0;
+      z-index: 100;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-indigo));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.2rem;
+      color: #fff;
+      box-shadow: var(--glow-blue);
+    }
+
+    .brand-text h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-text p {
+      font-size: 0.72rem;
+      color: var(--accent-blue);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .nav-menu {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .nav-header {
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-top: 0.8rem;
+      margin-bottom: 0.25rem;
+      padding-left: 0.6rem;
+    }
+
+    .nav-item a {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.55rem 0.75rem;
+      color: var(--text-secondary);
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 0.84rem;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+
+    .nav-item a:hover, .nav-item a.active {
+      background: var(--bg-tertiary);
+      color: var(--accent-blue);
+      border-left: 3px solid var(--accent-blue);
+    }
+
+    .nav-item .badge {
+      margin-left: auto;
+      font-size: 0.65rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--border-color);
+      color: var(--text-secondary);
+    }
+
+    /* Main Content */
+    .main {
+      flex: 1;
+      padding: 2.5rem 3.5rem;
+      max-width: 1280px;
+      overflow-y: auto;
+    }
+
+    .hero-header {
+      margin-bottom: 3rem;
+      position: relative;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      color: var(--accent-blue);
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.35rem 0.8rem;
+      border-radius: 9999px;
+      margin-bottom: 1rem;
+    }
+
+    .hero-title {
+      font-size: 2.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #ffffff 40%, var(--accent-blue) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.75rem;
+      line-height: 1.2;
+    }
+
+    .hero-subtitle {
+      font-size: 1.05rem;
+      color: var(--text-secondary);
+      max-width: 800px;
+      line-height: 1.6;
+    }
+
+    /* Tech Stack Pills */
+    .tech-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1.25rem;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+      padding: 0.3rem 0.7rem;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      font-family: 'Fira Code', monospace;
+    }
+
+    .pill.rust { border-color: #dea584; color: #ffab70; }
+    .pill.tauri { border-color: #24c8db; color: #24c8db; }
+    .pill.react { border-color: #61dafb; color: #61dafb; }
+    .pill.sqlite { border-color: #003b57; color: #38bdf8; }
+    .pill.hlc { border-color: #c084fc; color: #c084fc; }
+
+    /* Section Styles */
+    section {
+      margin-bottom: 4rem;
+      scroll-margin-top: 2rem;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .section-number {
+      font-family: 'Fira Code', monospace;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--accent-blue);
+    }
+
+    .section-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    /* Cards & Grid */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.25rem;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+    }
+
+    @media (max-width: 1024px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .main { padding: 1.5rem; }
+    }
+
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.5rem;
+      transition: all 0.25s ease;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .card:hover {
+      border-color: rgba(56, 189, 248, 0.4);
+      background: var(--bg-card-hover);
+      box-shadow: var(--shadow-lg);
+      transform: translateY(-2px);
+    }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      color: var(--text-primary);
+    }
+
+    .card-title .icon-badge {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.85rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-color);
+    }
+
+    .card-body {
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .card-list {
+      list-style: none;
+      margin-top: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .card-list li {
+      position: relative;
+      padding-left: 1.2rem;
+      font-size: 0.84rem;
+    }
+
+    .card-list li::before {
+      content: "•";
+      position: absolute;
+      left: 0.3rem;
+      color: var(--accent-blue);
+      font-weight: bold;
+    }
+
+    /* Visual Architecture Diagrams */
+    .diagram-container {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 1.75rem;
+      margin: 1.5rem 0;
+      overflow-x: auto;
+      box-shadow: inset 0 2px 6px rgba(0,0,0,0.4);
+    }
+
+    .diagram-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--accent-blue);
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* SVG Diagram Styles */
+    svg.arch-diag {
+      width: 100%;
+      height: auto;
+      min-width: 720px;
+    }
+
+    .node-box {
+      rx: 8;
+      transition: all 0.2s ease;
+    }
+    .node-box:hover {
+      filter: brightness(1.2);
+      cursor: pointer;
+    }
+
+    .node-text-title {
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      fill: #ffffff;
+    }
+
+    .node-text-desc {
+      font-family: 'Inter', sans-serif;
+      font-size: 11px;
+      fill: #94a3b8;
+    }
+
+    /* Tables */
+    .table-container {
+      overflow-x: auto;
+      margin: 1.25rem 0;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--bg-secondary);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      text-align: left;
+    }
+
+    th {
+      background: var(--bg-tertiary);
+      padding: 0.75rem 1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      border-bottom: 1px solid var(--border-color);
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.05em;
+    }
+
+    td {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid rgba(36, 49, 76, 0.5);
+      color: var(--text-secondary);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(56, 189, 248, 0.03);
+      color: var(--text-primary);
+    }
+
+    /* Code Blocks */
+    pre code {
+      display: block;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1rem 1.2rem;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.82rem;
+      color: #e2e8f0;
+      overflow-x: auto;
+      line-height: 1.5;
+    }
+
+    .code-keyword { color: #f472b6; font-weight: 600; }
+    .code-type { color: #38bdf8; }
+    .code-string { color: #a3e635; }
+    .code-comment { color: #64748b; font-style: italic; }
+    .code-fn { color: #c084fc; }
+
+    /* Highlights & Callouts */
+    .callout {
+      padding: 1rem 1.25rem;
+      border-radius: 8px;
+      margin: 1.25rem 0;
+      display: flex;
+      gap: 0.85rem;
+      align-items: flex-start;
+      font-size: 0.86rem;
+    }
+
+    .callout.info {
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: #bae6fd;
+    }
+
+    .callout.warning {
+      background: rgba(251, 191, 36, 0.08);
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      color: #fde68a;
+    }
+
+    .callout.success {
+      background: rgba(52, 211, 153, 0.08);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+      color: #a7f3d0;
+    }
+
+    .callout-icon {
+      font-size: 1.1rem;
+      line-height: 1;
+    }
+
+    /* Step Timeline */
+    .timeline {
+      position: relative;
+      padding-left: 2rem;
+      margin: 1.5rem 0;
+    }
+
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 7px;
+      top: 8px;
+      bottom: 8px;
+      width: 2px;
+      background: var(--border-color);
+    }
+
+    .timeline-item {
+      position: relative;
+      margin-bottom: 1.5rem;
+    }
+
+    .timeline-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .timeline-dot {
+      position: absolute;
+      left: -2rem;
+      top: 4px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--bg-primary);
+      border: 3px solid var(--accent-blue);
+    }
+
+    .timeline-title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+    }
+
+    .timeline-desc {
+      font-size: 0.84rem;
+      color: var(--text-secondary);
+    }
+
+    /* Footer */
+    footer {
+      margin-top: 5rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Sidebar Navigation -->
+  <nav class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">Y</div>
+      <div class="brand-text">
+        <h1>Yonalist</h1>
+        <p>Architecture v2</p>
+      </div>
+    </div>
+
+    <ul class="nav-menu">
+      <li class="nav-header">Overview</li>
+      <li class="nav-item"><a href="#overview" class="active">시스템 개요 및 철학 <span class="badge">Core</span></a></li>
+      <li class="nav-item"><a href="#overall-architecture">전체 시스템 구성도 <span class="badge">DAG</span></a></li>
+
+      <li class="nav-header">Rust Core Layer</li>
+      <li class="nav-item"><a href="#rust-crates">Crate 분할 & Hexagonal <span class="badge">5 Crates</span></a></li>
+      <li class="nav-item"><a href="#sqlite-storage">SQLite & Storage Engine <span class="badge">Worker</span></a></li>
+      <li class="nav-item"><a href="#vault-sync">Vault Sync & HLC 분산시계 <span class="badge">LWW</span></a></li>
+      <li class="nav-item"><a href="#export-engine">Deterministic Export <span class="badge">MD/PDF</span></a></li>
+
+      <li class="nav-header">Tauri Host & Frontend</li>
+      <li class="nav-item"><a href="#tauri-lifecycle">Tauri 호스트 & 수명주기 <span class="badge">v2 IPC</span></a></li>
+      <li class="nav-item"><a href="#frontend-store">React 19 & NotesStore <span class="badge">External</span></a></li>
+      <li class="nav-item"><a href="#data-mutation-flow">데이터 변경 & 실행 파이프라인 <span class="badge">Undo</span></a></li>
+
+      <li class="nav-header">Governance</li>
+      <li class="nav-item"><a href="#architecture-governance">품질 게이트 & 규칙 검증 <span class="badge">Checks</span></a></li>
+    </ul>
+  </nav>
+
+  <!-- Main Content Area -->
+  <main class="main">
+    <!-- Hero Header -->
+    <header class="hero-header">
+      <div class="hero-badge">
+        <span>⚡</span> Yonalist v2 Deep Architectural Blueprint
+      </div>
+      <h1 class="hero-title">Yonalist 시스템 아키텍처 상세 분석</h1>
+      <p class="hero-subtitle">
+        Yonalist는 로컬 볼트(Vault)와 SQLite 데이터베이스를 기반으로 계층형 아웃라인(Outline) 노트를 관리하는 고성능 <strong>로컬 퍼스트(Local-first) 데스크톱 애플리케이션</strong>입니다. 헥사고날 아키텍처(Hexagonal Architecture), 가역적 패치(Reversible Patches), HLC(Hybrid Logical Clock) 기반 분산 동기화 및 철저한 경계 검증을 특징으로 합니다.
+      </p>
+
+      <div class="tech-pills">
+        <span class="pill rust">Rust 1.97+ (2024 Edition)</span>
+        <span class="pill tauri">Tauri v2.11</span>
+        <span class="pill react">React 19 + TypeScript</span>
+        <span class="pill sqlite">SQLite 3 (rusqlite / FTS5)</span>
+        <span class="pill hlc">Hybrid Logical Clock (HLC)</span>
+      </div>
+    </header>
+
+    <!-- SECTION 1: SYSTEM OVERVIEW -->
+    <section id="overview">
+      <div class="section-header">
+        <span class="section-number">01</span>
+        <h2 class="section-title">시스템 핵심 철학 및 설계 원칙</h2>
+      </div>
+
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-title">
+            <span>로컬 퍼스트 & 데이터 주권</span>
+            <span class="icon-badge">🏠</span>
+          </div>
+          <div class="card-body">
+            모든 데이터는 사용자 로컬의 SQLite 파일과 일반 텍스트 Markdown 볼트에 저장됩니다. 원격 서버 의존성 없이 100% 오프라인 작동을 보장하며, 클라우드 중단 시에도 안전합니다.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>순수 도메인과 부수효과 격리</span>
+            <span class="icon-badge">🛡️</span>
+          </div>
+          <div class="card-body">
+            도메인 규칙(<code>notes-core</code>)은 DB, IPC, React, 플랫폼 API를 일체 참조하지 않는 순수 함수와 데이터 불변성으로 작성됩니다. 모든 명령은 가역적 패치(DomainPatch)로 계획됩니다.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>단일 DB 워커 & 무병목 I/O</span>
+            <span class="icon-badge">⚡</span>
+          </div>
+          <div class="card-body">
+            SQLite 연결은 단일 전용 백그라운드 스레드(DB Worker)가 독점 소유합니다. UI 스레드와의 경합을 방지하고 mpsc 채널 메시지 전달로 트랜잭션 충돌을 근원 차단합니다.
+          </div>
+        </div>
+      </div>
+
+      <div class="callout info" style="margin-top: 1.5rem;">
+        <span class="callout-icon">💡</span>
+        <div>
+          <strong>Strict Architectural Budgeting</strong>: 본 프로젝트는 <code>scripts/checkV2Architecture.mjs</code>를 통해 의존성 사이클 금지, 프로덕션 소스 파일 500라인 이하, 테스트 800라인 이하, Crate별 직접 의존성 20개 이하, Tauri IPC 23개 커맨드 완벽 화이트리스트 검증을 CI 단계에서 강제합니다.
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 2: OVERALL ARCHITECTURE DIAGRAM -->
+    <section id="overall-architecture">
+      <div class="section-header">
+        <span class="section-number">02</span>
+        <h2 class="section-title">전체 계층 구성도 (System Architecture Diagram)</h2>
+      </div>
+
+      <div class="diagram-container">
+        <div class="diagram-title">
+          <span>📐</span> Layered System Architecture & Data Boundary
+        </div>
+        
+        <svg class="arch-diag" viewBox="0 0 950 560" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Background Zones -->
+          <rect x="20" y="20" width="910" height="130" rx="12" fill="#182032" stroke="#24314c" stroke-width="1.5" />
+          <text x="40" y="48" fill="#38bdf8" font-family="Inter" font-size="12" font-weight="700" letter-spacing="1">FRONTEND LAYER (React 19 Shell & Store)</text>
+
+          <rect x="20" y="170" width="910" height="90" rx="12" fill="#131d2e" stroke="#24314c" stroke-width="1.5" />
+          <text x="40" y="198" fill="#818cf8" font-family="Inter" font-size="12" font-weight="700" letter-spacing="1">DESKTOP HOST & IPC BRIDGE (Tauri v2)</text>
+
+          <rect x="20" y="280" width="910" height="150" rx="12" fill="#0f172a" stroke="#24314c" stroke-width="1.5" />
+          <text x="40" y="308" fill="#34d399" font-family="Inter" font-size="12" font-weight="700" letter-spacing="1">APPLICATION & DOMAIN CORE (Rust Workspace)</text>
+
+          <rect x="20" y="450" width="910" height="90" rx="12" fill="#0b1120" stroke="#24314c" stroke-width="1.5" />
+          <text x="40" y="478" fill="#fbbf24" font-family="Inter" font-size="12" font-weight="700" letter-spacing="1">STORAGE & PERSISTENCE (SQLite Engine & Markdown Vault)</text>
+
+          <!-- Frontend Nodes -->
+          <g transform="translate(45, 65)">
+            <rect class="node-box" width="180" height="65" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5" />
+            <text x="15" y="28" class="node-text-title">React UI Shell</text>
+            <text x="15" y="48" class="node-text-desc">Outline, Panes, Settings</text>
+          </g>
+
+          <g transform="translate(250, 65)">
+            <rect class="node-box" width="200" height="65" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5" />
+            <text x="15" y="28" class="node-text-title">NotesStore (Sub-stores)</text>
+            <text x="15" y="48" class="node-text-desc">Drafts, Viewport, Undo Hist</text>
+          </g>
+
+          <g transform="translate(475, 65)">
+            <rect class="node-box" width="200" height="65" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5" />
+            <text x="15" y="28" class="node-text-title">Optimistic Overlay</text>
+            <text x="15" y="48" class="node-text-desc">300ms Debounce & Fences</text>
+          </g>
+
+          <g transform="translate(700, 65)">
+            <rect class="node-box" width="200" height="65" fill="#1e293b" stroke="#c084fc" stroke-width="1.5" />
+            <text x="15" y="28" class="node-text-title">packages/contracts</text>
+            <text x="15" y="48" class="node-text-desc">ts-rs 자동생성 TS 계약</text>
+          </g>
+
+          <!-- Tauri IPC Nodes -->
+          <g transform="translate(45, 195)">
+            <rect class="node-box" width="270" height="50" fill="#1a2234" stroke="#818cf8" stroke-width="1.5" />
+            <text x="15" y="25" class="node-text-title">Tauri 23 Commands Handler</text>
+            <text x="15" y="40" class="node-text-desc">notes_execute, notes_bootstrap ...</text>
+          </g>
+
+          <g transform="translate(340, 195)">
+            <rect class="node-box" width="260" height="50" fill="#1a2234" stroke="#818cf8" stroke-width="1.5" />
+            <text x="15" y="25" class="node-text-title">StartupGate & Security</text>
+            <text x="15" y="40" class="node-text-desc">CSP, Single-Instance, ACL</text>
+          </g>
+
+          <g transform="translate(625, 195)">
+            <rect class="node-box" width="275" height="50" fill="#1a2234" stroke="#818cf8" stroke-width="1.5" />
+            <text x="15" y="25" class="node-text-title">Vault Watcher & Runtime</text>
+            <text x="15" y="40" class="node-text-desc">File Notify & Debounce Pipeline</text>
+          </g>
+
+          <!-- Rust Crates Nodes -->
+          <g transform="translate(45, 330)">
+            <rect class="node-box" width="260" height="75" fill="#152136" stroke="#34d399" stroke-width="1.5" />
+            <text x="15" y="25" class="node-text-title">notes-application</text>
+            <text x="15" y="45" class="node-text-desc">NotesService, Revision Authority,</text>
+            <text x="15" y="62" class="node-text-desc">Ports (StoragePort, ImagePort)</text>
+          </g>
+
+          <g transform="translate(330, 330)">
+            <rect class="node-box" width="240" height="75" fill="#152136" stroke="#34d399" stroke-width="1.5" />
+            <text x="15" y="25" class="node-text-title">notes-core</text>
+            <text x="15" y="45" class="node-text-desc">Pure Tree Invariants, YID,</text>
+            <text x="15" y="62" class="node-text-desc">Reversible DomainPatch</text>
+          </g>
+
+          <g transform="translate(595, 330)">
+            <rect class="node-box" width="160" height="75" fill="#152136" stroke="#34d399" stroke-width="1.5" />
+            <text x="15" y="25" class="node-text-title">notes-sync</text>
+            <text x="15" y="45" class="node-text-desc">HLC, Parser, Render,</text>
+            <text x="15" y="62" class="node-text-desc">Merger, Conflict Log</text>
+          </g>
+
+          <g transform="translate(775, 330)">
+            <rect class="node-box" width="140" height="75" fill="#152136" stroke="#34d399" stroke-width="1.5" />
+            <text x="15" y="25" class="node-text-title">notes-export</text>
+            <text x="15" y="45" class="node-text-desc">Markdown &</text>
+            <text x="15" y="62" class="node-text-desc">Native PDF Layout</text>
+          </g>
+
+          <!-- Storage Layer Nodes -->
+          <g transform="translate(45, 475)">
+            <rect class="node-box" width="370" height="50" fill="#1c2538" stroke="#fbbf24" stroke-width="1.5" />
+            <text x="15" y="23" class="node-text-title">notes-sqlite (Dedicated DB Worker)</text>
+            <text x="15" y="40" class="node-text-desc">STRICT Tables, FTS5, HLC Triggers, Tags/Dates Index</text>
+          </g>
+
+          <g transform="translate(440, 475)">
+            <rect class="node-box" width="250" height="50" fill="#1c2538" stroke="#fbbf24" stroke-width="1.5" />
+            <text x="15" y="23" class="node-text-title">Content-Addressed Images</text>
+            <text x="15" y="40" class="node-text-desc">SHA-256 Assets Dir (DB 외부 저장)</text>
+          </g>
+
+          <g transform="translate(715, 475)">
+            <rect class="node-box" width="200" height="50" fill="#1c2538" stroke="#fbbf24" stroke-width="1.5" />
+            <text x="15" y="23" class="node-text-title">Markdown Vault</text>
+            <text x="15" y="40" class="node-text-desc">Plain Files (.md + assets)</text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <!-- SECTION 3: RUST CRATES & HEXAGONAL ARCHITECTURE -->
+    <section id="rust-crates">
+      <div class="section-header">
+        <span class="section-number">03</span>
+        <h2 class="section-title">Rust 워크스페이스 & Crate별 심층 분석</h2>
+      </div>
+
+      <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+        Yonalist의 백엔드는 헥사고날(포트 및 어댑터) 패턴을 엄격히 따릅니다. 의존성 방향은 항상 <strong>바깥쪽 어댑터에서 안쪽 순수 도메인</strong>으로 향하며, 상위 계층이 하위 계층을 직접 알지 못하도록 포트 인터페이스(<code>StoragePort</code>, <code>ImageAssetPort</code>, <code>ExportRendererPort</code>)를 사용합니다.
+      </p>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Crate 이름</th>
+              <th>의존 관계</th>
+              <th>핵심 책임 및 불변식 (Invariants)</th>
+              <th>주요 구조체 & 모듈</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong style="color: #34d399;">crates/notes-core</strong></td>
+              <td><em>(의존성 없음)</em></td>
+              <td>
+                • 순수 트리 불변성(순환 참조 방지, 최대 깊이 32)<br>
+                • 정렬 키 계산(<code>SORT_KEY_STEP</code>, <code>i64</code>)<br>
+                • <code>YID</code> (9바이트 URL-safe base64 식별자 생성)<br>
+                • 가역적 명령 패치 계획 (Forward & Inverse Patch)
+              </td>
+              <td>
+                <code>NotesTree</code>, <code>NoteNode</code>, <code>DomainPatch</code>, <code>NotesCommand</code>, <code>NodeId</code>
+              </td>
+            </tr>
+            <tr>
+              <td><strong style="color: #34d399;">crates/notes-application</strong></td>
+              <td><code>notes-core</code></td>
+              <td>
+                • 유스케이스 조율 및 IPC DTO 정의<br>
+                • 트랜잭션 리비전 번호 관리 및 세션 권한 부여<br>
+                • Undo/Redo 세션 이력 관리 (최대 1,000개 이력)<br>
+                • 4,096개 요청 멱등성(Idempotency) 캐시
+              </td>
+              <td>
+                <code>NotesService</code>, <code>StoragePort</code>, <code>ImageAssetPort</code>, <code>MutationReceipt</code>
+              </td>
+            </tr>
+            <tr>
+              <td><strong style="color: #34d399;">crates/notes-sqlite</strong></td>
+              <td><code>notes-application</code>, <code>notes-core</code>, <code>notes-sync</code></td>
+              <td>
+                • 전용 DB 워커 스레드 (채널 기반 싱글 스레드 I/O)<br>
+                • Schema v1 및 STRICT 테이블 무결성 관리<br>
+                • FTS5 전문 검색, 파생 인덱스(#태그, @멘션, ISO날짜)<br>
+                • 컨텐트 주소화(SHA-256) 이미지 애셋 포트 구현
+              </td>
+              <td>
+                <code>SqliteStorage</code>, <code>LocalImageAssets</code>, <code>SCHEMA_SQL</code>, <code>ReindexReport</code>
+              </td>
+            </tr>
+            <tr>
+              <td><strong style="color: #34d399;">crates/notes-sync</strong></td>
+              <td><code>notes-application</code>, <code>notes-core</code></td>
+              <td>
+                • 로컬 Markdown 파일과 DB 간 양방향 동기화<br>
+                • HLC(Hybrid Logical Clock) 기반 분산 인과관계 추적<br>
+                • 비파괴적 병합 및 충돌 로그 기록(<code>sync_conflict_log</code>)<br>
+                • 파싱 불가능 파일 격리(<code>sync_quarantine</code>)
+              </td>
+              <td>
+                <code>Hlc</code>, <code>merger</code>, <code>parser</code>, <code>render</code>, <code>intake</code>, <code>watcher</code>
+              </td>
+            </tr>
+            <tr>
+              <td><strong style="color: #34d399;">crates/notes-export</strong></td>
+              <td><code>notes-application</code>, <code>notes-core</code></td>
+              <td>
+                • 결정론적 Markdown 내보내기 (상대 애셋 경로 변환)<br>
+                • 임베디드 폰트 기반 네이티브 PDF 렌더링<br>
+                • 트랜잭션 롤백 보장 내보내기(<code>NativeExportPublisher</code>)
+              </td>
+              <td>
+                <code>NativeExportRenderer</code>, <code>NativeExportPublisher</code>, <code>pdf::layout</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="margin-top: 1.5rem;">
+        <h4 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--accent-blue);">가역적 도메인 패치 생성 (notes-core)</h4>
+        <pre><code><span class="code-comment">// 명령 수행 시 즉시 Forward 패치와 복구용 Inverse 패치가 한 쌍으로 계산됨</span>
+<span class="code-keyword">pub struct</span> <span class="code-type">DomainPatch</span> {
+    <span class="code-keyword">pub</span> forward: <span class="code-type">TreeMutation</span>,
+    <span class="code-keyword">pub</span> inverse: <span class="code-type">TreeMutation</span>,
+    <span class="code-keyword">pub</span> changed_nodes: <span class="code-type">Vec</span>&lt;<span class="code-type">NoteNode</span>&gt;,
+    <span class="code-keyword">pub</span> deleted_node_ids: <span class="code-type">Vec</span>&lt;<span class="code-type">NodeId</span>&gt;,
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- SECTION 4: SQLITE STORAGE ENGINE & SCHEMA -->
+    <section id="sqlite-storage">
+      <div class="section-header">
+        <span class="section-number">04</span>
+        <h2 class="section-title">SQLite 스토리지 엔진 & 스키마 v1</h2>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>단일 전용 DB 워커 패턴</span>
+            <span class="icon-badge">🧵</span>
+          </div>
+          <div class="card-body">
+            <code>SqliteStorage</code>는 자체 전용 백그라운드 OS 스레드를 생성하고, 크로스-스레드 채널(<code>std::sync::mpsc</code>)을 통해 요청을 처리합니다. SQLite 연결(<code>rusqlite::Connection</code>)이 스레드 경계를 절대 넘지 않으므로, 락 경합이나 교착 상태(Deadlock)가 원천 배제됩니다.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>컨텐트 주소화 이미지 스토리지</span>
+            <span class="icon-badge">🖼️</span>
+          </div>
+          <div class="card-body">
+            이미지 바이너리 바이트는 SQLite DB에 직접 들어가지 않습니다. 대신 SHA-256 해시값(<code>content_hash</code>)으로 애셋 디렉토리에 개별 파일로 저장됩니다. 중복 업로드가 방지되고, DB 파일 크기가 항상 컴팩트하게 유지됩니다.
+          </div>
+        </div>
+      </div>
+
+      <div class="table-container" style="margin-top: 1.5rem;">
+        <table>
+          <thead>
+            <tr>
+              <th>테이블 명</th>
+              <th>특징 및 제약 조건</th>
+              <th>주요 역할 및 컬럼 설명</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>notes_meta</code></td>
+              <td><code>STRICT, singleton = 1</code></td>
+              <td>단조 증가(Monotonic) 리비전 번호 저장 (낙관적 락 충돌 감지용)</td>
+            </tr>
+            <tr>
+              <td><code>notes_nodes</code></td>
+              <td><code>STRICT, CHECK(kind IN (...))</code></td>
+              <td>노트 트리 구조 (<code>id, parent_id, sort_key, text, note, marker, hlc, path</code>)</td>
+            </tr>
+            <tr>
+              <td><code>notes_images</code></td>
+              <td><code>STRICT, FK to notes_nodes</code></td>
+              <td>이미지 노드 메타데이터 (<code>content_hash, pixel_width, display_width, mime_type</code>)</td>
+            </tr>
+            <tr>
+              <td><code>notes_tags</code></td>
+              <td><code>STRICT, PRIMARY KEY(node_id, token)</code></td>
+              <td>트랜잭션 트리거로 파생 추출되는 정규화된 <code>#태그</code>, <code>@멘션</code> 인덱스</td>
+            </tr>
+            <tr>
+              <td><code>notes_dates</code></td>
+              <td><code>STRICT, PRIMARY KEY(node_id, date_key)</code></td>
+              <td>노트 본문에서 파생 추출되는 ISO 날짜(<code>YYYY-MM-DD</code>) 키</td>
+            </tr>
+            <tr>
+              <td><code>notes_fts</code></td>
+              <td><code>VIRTUAL TABLE USING fts5</code></td>
+              <td>FTS5 기반 고속 전문 검색 테이블 (Insert/Update/Delete 트리거 자동 동기화)</td>
+            </tr>
+            <tr>
+              <td><code>sync_documents</code></td>
+              <td><code>STRICT, root_id PK</code></td>
+              <td>볼트 내 Markdown 파일 맵핑, 파일 mtime, 파일 해시, 격리 여부 관리</td>
+            </tr>
+            <tr>
+              <td><code>sync_dirty_nodes</code></td>
+              <td><code>STRICT, node_id PK</code></td>
+              <td>HLC 트리거에 의해 마킹된 디스크 파일 동기화 대기 큐 (Outbox)</td>
+            </tr>
+            <tr>
+              <td><code>sync_conflict_log</code></td>
+              <td><code>STRICT, AUTOINCREMENT</code></td>
+              <td>HLC 타임스탬프 경쟁에서 패배한(Loser) 변경사항의 JSON 스냅샷 보존</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SECTION 5: VAULT SYNC & HYBRID LOGICAL CLOCK -->
+    <section id="vault-sync">
+      <div class="section-header">
+        <span class="section-number">05</span>
+        <h2 class="section-title">Markdown 볼트 동기화 & HLC (Hybrid Logical Clock)</h2>
+      </div>
+
+      <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+        Yonalist는 중앙 서버 없이도 여러 기기에서 Markdown 파일을 수정했을 때 발생할 수 있는 충돌을 수학적으로 해결하기 위해 <strong>Hybrid Logical Clock (HLC)</strong>을 탑재했습니다.
+      </p>
+
+      <div class="timeline">
+        <div class="timeline-item">
+          <div class="timeline-dot"></div>
+          <div class="timeline-title">1. 트리거 기반 HLC 자동 타임스탬핑 (Auto-stamping)</div>
+          <div class="timeline-desc">
+            사용자가 노트를 작성하거나 수정하면 SQLite 내부의 <code>AFTER UPDATE</code> / <code>AFTER INSERT</code> 트리거가 <code>yona_hlc()</code>를 호출하여 인과적 순서가 보장된 HLC 문자열을 기록하고 <code>sync_dirty_nodes</code>에 변경 플래그를 세웁니다.
+          </div>
+        </div>
+
+        <div class="timeline-item">
+          <div class="timeline-dot"></div>
+          <div class="timeline-title">2. 비동기 Outbox 내보내기 (Export Pipeline)</div>
+          <div class="timeline-desc">
+            <code>SyncRuntime</code>이 디바운스된 큐를 모니터링하여 더티 노드가 속한 문서를 Markdown으로 렌더링하고, 아토믹 파일 쓰기를 통해 볼트 디렉토리에 동기화합니다.
+          </div>
+        </div>
+
+        <div class="timeline-item">
+          <div class="timeline-dot"></div>
+          <div class="timeline-title">3. 볼트 파일 감시 및 인테이크 (File Watcher & Intake)</div>
+          <div class="timeline-desc">
+            외부 에디터(VS Code, Obsidian 등)에 의해 볼트 파일이 수정되면, <code>VaultWatch</code>가 이벤트를 포착하여 파서(<code>notes-sync/parse.rs</code>)로 전달합니다.
+          </div>
+        </div>
+
+        <div class="timeline-item">
+          <div class="timeline-dot"></div>
+          <div class="timeline-title">4. 비파괴적 LWW 병합 & 격리 (Merger & Quarantine)</div>
+          <div class="timeline-desc">
+            수신된 노드의 HLC와 DB의 HLC를 비교하여 최신 노드를 채택(Last-Write-Wins)합니다. 밀려난 변경은 <code>sync_conflict_log</code>에 안전하게 기록되며, 문법 오류가 있는 파일은 <code>sync_quarantine</code>에 보관되어 원본 데이터 유실을 방지합니다.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 6: TAURI HOST & LIFECYCLE -->
+    <section id="tauri-lifecycle">
+      <div class="section-header">
+        <span class="section-number">06</span>
+        <h2 class="section-title">Tauri v2 호스트 & 보안 수명주기</h2>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>비차단 초고속 부트스트랩 (StartupGate)</span>
+            <span class="icon-badge">🚀</span>
+          </div>
+          <div class="card-body">
+            앱 실행 시 WebView 로딩(약 294KB JS 번들)과 SQLite 초기화가 병렬로 진행됩니다. <code>StartupGate</code>를 통해 DB 워커가 최대 80개 노드의 <code>BootSnapshot</code>을 사전 계산하여 첫 화면 렌더링 지연(FCP)을 최소화합니다.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>보안 모델 & 정밀 권한 ACL</span>
+            <span class="icon-badge">🔒</span>
+          </div>
+          <div class="card-body">
+            엄격한 CSP(Content Security Policy)가 적용되어 임의 스크립트 실행이 차단됩니다. Tauri 커맨드는 <code>main-window.toml</code>에 명시된 23개 핵심 커맨드만 허용되며, 단일 인스턴스 락(Single-Instance Plugin)이 중복 프로세스 실행을 차단합니다.
+          </div>
+        </div>
+      </div>
+
+      <div class="callout warning" style="margin-top: 1.25rem;">
+        <span class="callout-icon">⚠️</span>
+        <div>
+          <strong>세션 종료 시 정밀 리컨실리에이션 (Close Cleanup)</strong>: 앱 종료 시(<code>notes_close_session</code>) 진행 중인 트랜잭션 플러시 후 <code>PRAGMA optimize</code>를 수행하며, DB에서 참조가 끊긴 고아 이미지 파일들을 안전하게 정리합니다. (시작 시에는 I/O 부하 방지를 위해 디렉토리 스캔을 수행하지 않음)
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 7: FRONTEND STORE & REACT 19 UI -->
+    <section id="frontend-store">
+      <div class="section-header">
+        <span class="section-number">07</span>
+        <h2 class="section-title">프론트엔드 상태 관리 & React 19 아키텍처</h2>
+      </div>
+
+      <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+        무거운 외부 상태 관리 라이브러리(Redux, Zustand 등) 대신, Yonalist는 도메인에 완벽히 최적화된 <strong>Custom External Store (<code>NotesStore</code>)</strong> 패턴을 채택했습니다.
+      </p>
+
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-title">
+            <span>StoreDrafts (300ms Debounce)</span>
+            <span class="icon-badge">✍️</span>
+          </div>
+          <div class="card-body">
+            키보드 입력 시 즉각적인 로컬 Paint를 수행하고, 300ms 디바운스, 포커스 이동(Blur), 또는 창 닫기 시에만 IPC 커맨드를 발행하여 타이핑 레이턴시를 0ms에 가깝게 유지합니다.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>StoreViewport (80-node Window)</span>
+            <span class="icon-badge">🪟</span>
+          </div>
+          <div class="card-body">
+            수만 개의 노드가 있는 대형 문서도 최대 80개의 뷰포트 노드만 메모리에 페이징 로드하여 DOM 노드 과부하를 방지하고 부드러운 스크롤을 보장합니다.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>StoreSubscriptions (Fine-grained)</span>
+            <span class="icon-badge">🎯</span>
+          </div>
+          <div class="card-body">
+            개별 노드 컴포넌트(<code>useNotesNode</code>)는 자신이 속한 노드의 ID 변경만 구독합니다. 한 줄을 수정해도 전체 트리가 리렌더링되지 않는 고성능 렌더링 트리를 구현했습니다.
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 1.25rem;">
+        <div class="card-title">
+          <span>인터랙션 히스토리 & Undo/Redo 결합</span>
+          <span class="icon-badge">↩️</span>
+        </div>
+        <div class="card-body">
+          <p>
+            동일한 <code>historyGroup</code>을 가진 연속된 타이핑은 하나의 Undo 단위로 자동 병합(Coalescing)됩니다. 내비게이션 이동 시 "히스토리 펜스(Fence)"가 생성되어 타이핑 그룹이 분리되며, UI의 페인(Pane) 내비게이션 히스토리와 Rust의 데이터 뮤테이션 히스토리가 매끄럽게 결합되어 작동합니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 8: DATA MUTATION FLOW -->
+    <section id="data-mutation-flow">
+      <div class="section-header">
+        <span class="section-number">08</span>
+        <h2 class="section-title">데이터 변경 및 실행 파이프라인 (Data Mutation Pipeline)</h2>
+      </div>
+
+      <div class="diagram-container">
+        <div class="diagram-title">
+          <span>🔄</span> End-to-End Mutation & Reconciliation Sequence
+        </div>
+
+        <div class="timeline">
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color: #38bdf8;"></div>
+            <div class="timeline-title">Step 1: Editor 입력 및 낙관적 UI 반영</div>
+            <div class="timeline-desc">
+              사용자가 텍스트 입력 시 <code>StoreDrafts</code>가 즉각 로컬 오버레이에 상태를 반영(Zero Lag Paint). 300ms 후 <code>api.notes_execute()</code> 호출.
+            </div>
+          </div>
+
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color: #818cf8;"></div>
+            <div class="timeline-title">Step 2: Tauri IPC 거버넌스 및 세션 권한 검증</div>
+            <div class="timeline-desc">
+              <code>DesktopRuntime</code>이 활성 세션을 확인하고 <code>NotesService</code>로 명령 전달. 멱등성 캐시(Idempotency Cache)로 중복 패킷 필터링.
+            </div>
+          </div>
+
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color: #34d399;"></div>
+            <div class="timeline-title">Step 3: notes-core 가역적 패치 계획</div>
+            <div class="timeline-desc">
+              순수 함수 <code>NotesTree::plan_command()</code>가 트리 불변식을 검증하고 Forward/Inverse 패치(<code>DomainPatch</code>) 생성.
+            </div>
+          </div>
+
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color: #fbbf24;"></div>
+            <div class="timeline-title">Step 4: DB Worker 원자적 커밋 & HLC 트리거</div>
+            <div class="timeline-desc">
+              SQLite 트랜잭션 내에서 리비전 번호를 확인하고 노드를 업데이트. HLC 트리거가 실행되어 <code>sync_dirty_nodes</code>에 기록 후 <code>MutationReceipt</code> 반환.
+            </div>
+          </div>
+
+          <div class="timeline-item">
+            <div class="timeline-dot" style="border-color: #c084fc;"></div>
+            <div class="timeline-title">Step 5: 프론트엔드 영수증(Receipt) 확정 & 볼트 파일 출력</div>
+            <div class="timeline-desc">
+              프론트엔드는 수신된 <code>MutationReceipt</code>로 낙관적 상태를 확정(Confirmed)하고, 백그라운드에서는 <code>SyncRuntime</code>이 Markdown 파일을 안전하게 갱신.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 9: ARCHITECTURAL GOVERNANCE -->
+    <section id="architecture-governance">
+      <div class="section-header">
+        <span class="section-number">09</span>
+        <h2 class="section-title">아키텍처 거버넌스 & 자동화된 적합도 함수 (Fitness Functions)</h2>
+      </div>
+
+      <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+        아키텍처가 시간이 지나며 부식되는 것을 방지하기 위해 엄격한 자동화 검증 스크립트가 CI 파이프라인의 필수 게이트로 동작합니다.
+      </p>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>체크 항목</span>
+            <span class="icon-badge">📋</span>
+          </div>
+          <div class="card-body">
+            <ul class="card-list">
+              <li><strong>Crate 의존성 DAG 검증</strong>: 상위 Crate로의 역류 및 순환 참조 0건 강제.</li>
+              <li><strong>Tauri 커맨드 화이트리스트</strong>: 23개 IPC 커맨드가 <code>main-window.toml</code> 및 <code>build.rs</code>와 1:1 일치하는지 전수 검사.</li>
+              <li><strong>프론트엔드 모듈 순환 차단</strong>: <code>apps/desktop/src</code> 내 순환 import 즉시 빌드 실패.</li>
+              <li><strong>코드 라인 수 예산 (Budget)</strong>: 소스 파일 최대 500라인, 테스트 800라인 제한.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>실행 명령 & CI 게이트</span>
+            <span class="icon-badge">⚙️</span>
+          </div>
+          <div class="card-body">
+            <pre><code><span class="code-comment"># CI 실행 스크립트 (전체 게이트 통과 필수)</span>
+npm run test:all
+
+<span class="code-comment"># 개별 검증 스크립트</span>
+npm run test:architecture  <span class="code-comment"># DAG & Line Budget</span>
+npm run test:contracts     <span class="code-comment"># ts-rs 계약 일치 여부</span>
+npm run test:bundle        <span class="code-comment"># 번들 크기 예산 (294KB)</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer>
+      <div>
+        <strong>Yonalist v2 Architecture Report</strong> — Generated for Technical Review
+      </div>
+      <div>
+        Local-first • Reversible Patches • Hexagonal Rust • Tauri v2
+      </div>
+    </footer>
+  </main>
+</div>
+
+<script>
+  // Smooth scroll for nav items
+  document.querySelectorAll('.nav-item a').forEach(anchor => {
+    anchor.addEventListener('click', function(e) {
+      document.querySelectorAll('.nav-item a').forEach(a => a.classList.remove('active'));
+      this.classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>
