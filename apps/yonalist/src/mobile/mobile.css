@@ -189,3 +189,31 @@
   height: 16px;
   color: var(--accent);
 }
+
+/* The strip that stands in for the keys a phone does not have. It sits where
+   the tab bar was, which is why that one steps aside while the keyboard is up. */
+.mobile-accessory {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-strong, var(--border));
+  background: var(--bg-app);
+}
+
+.mobile-accessory-key {
+  flex: 1;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-card);
+  color: var(--text-1);
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  /* The bar is pressed, never scrolled or selected from. */
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}

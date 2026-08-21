@@ -3,6 +3,7 @@ import { tauriNotesApi, type NotesApi } from "../api";
 import { NotesStore } from "../notesStore";
 import { MobileIcon, type MobileIconName } from "./MobileIcon";
 import { MobileToday } from "./MobileToday";
+import { MobileAccessoryBar } from "./MobileAccessoryBar";
 import { useKeyboardInset } from "./useKeyboardInset";
 import "./mobile.css";
 
@@ -47,6 +48,7 @@ export function MobileApp({ api = tauriNotesApi }: { readonly api?: NotesApi }) 
           <h1 className="mobile-screen-title">{open.label}</h1>
         )}
       </main>
+      {keyboard > 0 && <MobileAccessoryBar store={store} />}
       <nav className="mobile-tabs" aria-label="Sections" role="tablist">
         {sections.map((candidate) => (
           <button

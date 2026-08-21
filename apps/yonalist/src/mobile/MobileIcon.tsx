@@ -24,7 +24,15 @@ const glyphs = {
   "chevron-right": "M9 6l6 6l-6 6",
   dots:
     "M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0|M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0|M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
-  check: "M5 12l5 5l10 -10"
+  check: "M5 12l5 5l10 -10",
+  "indent-increase": "M20 6l-11 0|M20 12l-7 0|M20 18l-11 0|M4 8l4 4l-4 4",
+  "indent-decrease": "M20 6l-7 0|M20 12l-9 0|M20 18l-7 0|M8 8l-4 4l4 4",
+  "square-check":
+    "M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14|M9 12l2 2l4 -4",
+  tag:
+    "M6.5 7.5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0|M3 6v5.172a2 2 0 0 0 .586 1.414l7.71 7.71a2.41 2.41 0 0 0 3.408 0l5.592 -5.592a2.41 2.41 0 0 0 0 -3.408l-7.71 -7.71a2 2 0 0 0 -1.414 -.586h-5.172a3 3 0 0 0 -3 3",
+  "keyboard-hide":
+    "M2 5a2 2 0 0 1 2 -2h16a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2l0 -8|M6 7l0 .01|M10 7l0 .01|M14 7l0 .01|M18 7l0 .01|M6 11l0 .01|M18 11l0 .01|M10 11l4 0|M10 21l2 -2l2 2"
 } as const;
 
 export type MobileIconName = keyof typeof glyphs;
