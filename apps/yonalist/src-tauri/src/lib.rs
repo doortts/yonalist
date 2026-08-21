@@ -654,16 +654,19 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     #[allow(unused_mut)]
     let mut builder =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-            .title("Yonalist")
-            .inner_size(1200.0, 760.0)
-            .min_inner_size(840.0, 560.0);
+            .title("Yonalist");
 
-    // Borders and bars are a desktop-only builder option; on a phone the
-    // webview is the screen. The sizes above stay unconditional because mobile
-    // accepts and ignores them, and splitting them out would buy nothing.
+    // A window's size and its borders are desktop questions; on a phone the
+    // webview is the screen. The sizes are not merely pointless there, they are
+    // harmful: iOS lays the page out at whatever width it is given, so a
+    // desktop 1200 leaves a phone rendering a 1200 point page and showing the
+    // left third of it.
     #[cfg(desktop)]
     {
-        builder = builder.decorations(true);
+        builder = builder
+            .inner_size(1200.0, 760.0)
+            .min_inner_size(840.0, 560.0)
+            .decorations(true);
     }
 
     // Overlay title bar, hidden title and traffic-light placement are macOS-only
