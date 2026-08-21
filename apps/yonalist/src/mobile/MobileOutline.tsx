@@ -2,6 +2,13 @@ import { useState } from "react";
 import { NotesOutline } from "../NotesOutline";
 import type { NotesStore } from "../notesStore";
 import type { NotesShellSnapshot } from "../store/storeSubscriptions";
+// The rows are the desktop's, and so are the rules that lay them out. Without
+// these the outline falls back to unstyled blocks: the row's grid collapses
+// and the text drops below its own bullet. Imported here rather than in the
+// entry so they arrive with the component that needs them.
+import "../notes.css";
+import "../handwritingFaces.css";
+import "../formControls.css";
 
 /**
  * The rows, on a phone.

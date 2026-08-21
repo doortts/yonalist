@@ -41,3 +41,24 @@ describe("mobile touch targets", () => {
     expect(rule(css, ".mobile-app .notes-node-bullet")).toContain("touch-action: none");
   });
 });
+
+describe("mobile row layout", () => {
+  it("gives the row back the width the pointer affordances were holding", () => {
+    // The row menu opens on hover, which a phone has none of, so its column is
+    // dead width on the narrowest screen there is.
+    expect(rule(css, ".mobile-app .notes-node")).toContain("--notes-menu-width: 0px");
+  });
+
+  it("makes a row as tall as a finger, not as tall as a line", () => {
+    const row = rule(css, ".mobile-app .notes-node-main");
+
+    const [, height] = /min-height: (\d+)px/u.exec(row) ?? [];
+    expect(Number(height)).toBeGreaterThanOrEqual(FLOOR);
+  });
+});
+
+describe("mobile row chrome", () => {
+  it("takes the hover-only row menu out rather than leaving it to spill", () => {
+    expect(rule(css, ".mobile-app .notes-node-menu-slot")).toContain("display: none");
+  });
+});

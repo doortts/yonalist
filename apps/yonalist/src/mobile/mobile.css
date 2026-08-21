@@ -247,3 +247,24 @@
   position: absolute;
   inset: -14px;
 }
+
+/* A row on a phone.
+   The leading column belongs to the row menu, which opens on hover — a phone
+   has none, so on the narrowest screen there is that column is dead width. It
+   collapses, and the outline's grid closes over it without being rewritten.
+   The row also grows from a line's height to a finger's. */
+.mobile-app .notes-node {
+  --notes-menu-width: 0px;
+}
+
+/* The column closes but the button inside it does not, and its dots spill
+   left of the bullet. It opens on hover, so on a phone it has no way to be
+   asked for anyway. */
+.mobile-app .notes-node-menu-slot {
+  display: none;
+}
+
+.mobile-app .notes-node-main {
+  min-height: 44px;
+  align-items: center;
+}
