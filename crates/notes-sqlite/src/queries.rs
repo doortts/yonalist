@@ -49,10 +49,12 @@ fn anchor_sql() -> String {
 }
 
 /// The page a hit sits in: the nearest ancestor -- the hit's own row included
-/// -- that the page rule below names. A journal day hangs from the Journals
-/// node, so two ancestors of a row inside a day qualify and only the nearer one
-/// is the page it is in; without the depth the answer would ride on the order a
-/// recursive CTE happens to emit its rows in.
+/// -- whose parent the page rule below names. Only the parent half of that rule
+/// is asked here: trash flags a branch's root and leaves its rows live, so a
+/// hit under a trashed page still names it, the way it always has. A journal day
+/// hangs from the Journals node, so two ancestors of a row inside a day qualify
+/// and only the nearer one is the page it is in; without the depth the answer
+/// would ride on the order a recursive CTE happens to emit its rows in.
 ///
 /// The two ids are written into the text rather than bound, so the one fragment
 /// serves both callers: `search` and `filtered_search` number their parameters
@@ -83,12 +85,13 @@ fn page_id_sql() -> String {
 /// so a page with enough children of its own would push the pages after it out
 /// of the answer.
 ///
-/// The window answers the same question of a receipt rather than of SQLite, so
-/// the same rule is written twice: `storeSupport.ts::isPageParent`. A new page
-/// rule lands here first -- go and widen that one too, or the list the window
-/// keeps and the list a restart reads stop agreeing. Search asks which page a
-/// row is *in* rather than which rows are pages, and `page_id_sql` above is
-/// where this rule answers that.
+/// This parent set is written three times. The window answers the same question
+/// of a receipt rather than of SQLite (`storeSupport.ts::isPageParent`), and
+/// search asks which page a row is *in* rather than which rows are pages, with
+/// the same set inlined into its text (`page_id_sql` above). A new page rule
+/// lands here first -- go and widen both of those too, or the list the window
+/// keeps and the list a restart reads stop agreeing, and a hit inside the new
+/// kind of page names the wrong one.
 pub(crate) fn pages(connection: &Connection) -> Result<Vec<PageSummary>, StorageError> {
     let mut statement = connection
         .prepare(
@@ -684,8 +687,12 @@ mod tests {
 
             // The word, the day's own title, and the filtered path, which is a
             // second copy of the same question.
-            for query in ["standup", "2026-08-20", "is:starred"] {
-                let page = search(
+            for (query, row) in [
+                ("standup", "standup"),
+                ("2026-08-20", "2026-08-20"),
+                ("is:starred", "standup"),
+            ] {
+                let hit = search(
                     &connection,
                     SearchQuery {
                         text: query.into(),
@@ -697,9 +704,12 @@ mod tests {
                 .hits
                 .into_iter()
                 .next()
-                .expect("hit")
-                .page_id;
-                assert_eq!(page, "2026-08-20", "{query} under {journals_parent}");
+                .expect("hit");
+                // Which row answered matters: the day's own row answers with
+                // itself, so a query that drifted onto it would keep passing
+                // while the row inside it went wrong.
+                assert_eq!(hit.node.id, row, "{query} under {journals_parent}");
+                assert_eq!(hit.page_id, "2026-08-20", "{query} under {journals_parent}");
             }
         }
     }

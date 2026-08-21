@@ -145,7 +145,7 @@ Fallout inside item 1, all in `queries.rs`:
   `[?1 expression, ?2 limit, ?3 offset]` (the `?4` root bind disappears; the
   `node.id <> ?4` exclusion becomes an inlined `node.id <> '{ROOT_ID}'`).
 - `filtered_search`'s binds shrink to `[?1 limit, ?2 offset, ...values]`, its
-  `node.id <> ?3` inlines the same way, and the five filter clause strings
+  `node.id <> ?3` inlines the same way, and the six filter clause strings
   renumber mechanically: `?4` → `?3`, `?5` → `?4` (starred, trash, tagged,
   tag:, date-range, single-date — queries.rs:217-260). Statements are
   prepared per call, not cached, so switching static SQL to `format!` changes
