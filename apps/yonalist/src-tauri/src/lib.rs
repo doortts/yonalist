@@ -656,8 +656,15 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
             .title("Yonalist")
             .inner_size(1200.0, 760.0)
-            .min_inner_size(840.0, 560.0)
-            .decorations(true);
+            .min_inner_size(840.0, 560.0);
+
+    // Borders and bars are a desktop-only builder option; on a phone the
+    // webview is the screen. The sizes above stay unconditional because mobile
+    // accepts and ignores them, and splitting them out would buy nothing.
+    #[cfg(desktop)]
+    {
+        builder = builder.decorations(true);
+    }
 
     // Overlay title bar, hidden title and traffic-light placement are macOS-only
     // concepts, so they stay off every other platform.
@@ -921,6 +928,7 @@ async fn run_blocking<T: Send + 'static>(
         })?
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
