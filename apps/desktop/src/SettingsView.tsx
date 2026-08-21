@@ -181,11 +181,13 @@ export function SettingsView({
         </div>
         <button
           type="button"
-          className="icon-button"
+          className="pane-toggle"
           aria-label="Close settings"
+          data-tooltip="Close settings"
+          data-tooltip-align="right"
           onClick={onClose}
         >
-          <X size={18} />
+          <X size={16} aria-hidden="true" />
         </button>
       </header>
 

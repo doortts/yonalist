@@ -352,7 +352,10 @@ describe("SettingsView", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Yonal Dark dark theme" }));
     expect(handlers.onDarkThemeChange).toHaveBeenCalledWith("yona-dark");
 
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    const closeButton = screen.getByRole("button", { name: "Close settings" });
+    expect(closeButton).toHaveAttribute("data-tooltip", "Close settings");
+    expect(closeButton).toHaveAttribute("data-tooltip-align", "right");
+    fireEvent.click(closeButton);
     expect(handlers.onClose).toHaveBeenCalled();
   });
 
