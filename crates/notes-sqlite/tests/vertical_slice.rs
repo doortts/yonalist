@@ -786,9 +786,9 @@ fn proposed_ids_never_overwrite_existing_nodes() {
 #[test]
 fn a_journal_day_lands_wherever_the_journals_node_has_got_to() {
     let journals = notes_core::JOURNALS_ID;
-    for (scenario, day, revision_before_the_day) in [
-        ("dragged into a page", "day-dragged", 4),
-        ("thrown away", "day-trashed", 4),
+    for (scenario, day) in [
+        ("dragged into a page", "day-dragged"),
+        ("thrown away", "day-trashed"),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let storage = SqliteStorage::open(&directory.path().join("notes-v2.sqlite")).unwrap();
@@ -861,7 +861,10 @@ fn a_journal_day_lands_wherever_the_journals_node_has_got_to() {
         service
             .execute(command(
                 "day",
-                revision_before_the_day,
+                // Four either way: a creation the node already there answers
+                // writes nothing and still takes a revision, which is the
+                // number the day after it has to be sent against.
+                4,
                 IpcNotesCommand::CreateNode {
                     id: day.into(),
                     parent_id: journals.into(),
