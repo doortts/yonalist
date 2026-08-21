@@ -4,13 +4,14 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
 import { App } from "./App";
 import { localDateIso } from "./outline/outlineSlash";
-import { ROOT_ID } from "./store/storeSupport";
+import { JOURNALS_ID, ROOT_ID } from "./store/storeSupport";
 import { appApi } from "./test/appApiFixture";
 
 const TODAY = localDateIso();
 
 const PAGES = [
   { id: "page-1", title: "Reading list", sortKey: 1_024 },
+  { id: JOURNALS_ID, title: "Journals", sortKey: 1_536 },
   { id: "journal-1", title: TODAY, sortKey: 2_048 },
   { id: "page-2", title: "Ideas", sortKey: 3_072 }
 ];
@@ -73,6 +74,16 @@ describe("the Journals section of the sidebar", () => {
     expect(pages.getByRole("button", { name: /^Reading list/u })).toBeTruthy();
     expect(pages.queryByRole("button", { name: new RegExp(`^${TODAY}`, "u") }))
       .toBeNull();
+  });
+
+  it("keeps the Journals node out of the Pages list", async () => {
+    render(<App api={journalApi()} />);
+    await screen.findByDisplayValue("Reading list");
+
+    // The section above the list is how the journals are reached, so the node
+    // they hang from would only be a second door to the same place.
+    const pages = within(sidebar().getByRole("region", { name: "Pages" }));
+    expect(pages.queryByRole("button", { name: /^Journals/u })).toBeNull();
   });
 
   it("numbers the pages without counting the journals", async () => {

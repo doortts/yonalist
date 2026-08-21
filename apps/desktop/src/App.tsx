@@ -42,7 +42,7 @@ import {
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
 import type { JournalDateMenuTarget } from "./JournalDateMenu";
-import { ROOT_ID } from "./store/storeSupport";
+import { JOURNALS_ID, ROOT_ID } from "./store/storeSupport";
 import { journalDateOf, journalDays } from "./journal";
 import { localDateIso } from "./outline/outlineSlash";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
@@ -268,9 +268,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   }, [outline.nodes, primaryZoomRootId, state.pages]);
   // Journal days are pages, but they are not in this list: one arrives every
   // day a reader writes, and a year of them would bury the pages somebody
-  // named. The Journals section above the list is where they are reached.
+  // named. The Journals section above the list is where they are reached -- and
+  // the node they hang from goes with them, since a row for it here would only
+  // be a second door to the same place.
   const pageRows = useMemo(
-    () => state.pages.filter((page) => journalDateOf(page.title) === null),
+    () => state.pages.filter((page) =>
+      page.id !== JOURNALS_ID && journalDateOf(page.title) === null),
     [state.pages]
   );
   // A filter or a search takes the page rows off screen, and a row that is not
