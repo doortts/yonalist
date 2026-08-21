@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { tauriNotesApi, type NotesApi } from "../api";
 import { NotesStore } from "../notesStore";
 import { MobileIcon, type MobileIconName } from "./MobileIcon";
 import { MobileToday } from "./MobileToday";
+import { useKeyboardInset } from "./useKeyboardInset";
 import "./mobile.css";
 
 /**
@@ -31,9 +32,14 @@ export function MobileApp({ api = tauriNotesApi }: { readonly api?: NotesApi }) 
   // One store for the whole shell: the sections are views of the same notes,
   // and a store per tab would give each its own revision to argue with.
   const store = useMemo(() => new NotesStore(api), [api]);
+  const keyboard = useKeyboardInset();
 
   return (
-    <div className="mobile-app">
+    <div
+      className="mobile-app"
+      data-keyboard={keyboard > 0 ? "up" : undefined}
+      style={{ "--mobile-keyboard": `${keyboard}px` } as CSSProperties}
+    >
       <main className="mobile-screen" id={`mobile-panel-${open.id}`} role="tabpanel">
         {section === "today" ? (
           <MobileToday store={store} />

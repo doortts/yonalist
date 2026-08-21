@@ -6,11 +6,21 @@
 .mobile-app {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
   background: var(--bg-app);
   color: var(--text-1);
   /* The tab bar sits on the home indicator otherwise. */
   padding-bottom: env(safe-area-inset-bottom);
+  /* iOS draws the keyboard over the page rather than shrinking it, so the
+     shell gives up exactly the height the keyboard took and the rows scroll
+     within what is left. Without this the row being written sits underneath
+     it. */
+  height: calc(100dvh - var(--mobile-keyboard, 0px));
+}
+
+/* While the keyboard is up the tab bar is unreachable anyway, and the screen
+   is the scarcest thing there is. The accessory bar takes its place. */
+.mobile-app[data-keyboard="up"] .mobile-tabs {
+  display: none;
 }
 
 .mobile-screen {
