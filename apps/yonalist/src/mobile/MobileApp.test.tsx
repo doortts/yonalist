@@ -2,12 +2,13 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { MobileApp } from "./MobileApp";
+import { appApi } from "../test/appApiFixture";
 
 const sections = () => screen.getByRole("tablist", { name: /sections/i });
 
 describe("MobileApp", () => {
   it("offers the four sections the phone navigates by", () => {
-    render(<MobileApp />);
+    render(<MobileApp api={appApi()} />);
 
     const tabs = within(sections()).getAllByRole("tab");
 
@@ -20,15 +21,17 @@ describe("MobileApp", () => {
   });
 
   it("opens on Today, because that is what the app is for", () => {
-    render(<MobileApp />);
+    render(<MobileApp api={appApi()} />);
 
     expect(within(sections()).getByRole("tab", { selected: true })).toHaveTextContent("Today");
-    expect(screen.getByRole("heading", { name: "Today" })).toBeInTheDocument();
+    // The section shows a day rather than its own name: the heading is the
+    // date, which is what the screen is actually about.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(/\d{4}/);
   });
 
   it("shows the section a tap selects and only that one", async () => {
     const user = userEvent.setup();
-    render(<MobileApp />);
+    render(<MobileApp api={appApi()} />);
 
     await user.click(within(sections()).getByRole("tab", { name: "Pages" }));
 

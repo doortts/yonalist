@@ -68,3 +68,63 @@
 .mobile-tab-label {
   line-height: 1.2;
 }
+
+/* The day, above its rows. The date is the heading and the steps sit opposite
+   it, so the two lines of naming and the two buttons share one band rather
+   than stacking into three. */
+.mobile-day-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.mobile-day-names {
+  flex: 1;
+  min-width: 0;
+}
+
+.mobile-day-date {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  margin: 0;
+}
+
+.mobile-day-weekday {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-3);
+  margin: 0;
+}
+
+.mobile-day-step {
+  flex: none;
+  /* 34 points of border with 44 of reach: the button reads as the small
+     control it is while still being one a thumb can land on. */
+  width: 34px;
+  height: 34px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-card);
+  color: var(--text-2);
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-day-step::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+}
+
+.mobile-outline {
+  /* The rows carry their own spacing; this only stops them from sitting under
+     the day above them. */
+  padding-top: 2px;
+}

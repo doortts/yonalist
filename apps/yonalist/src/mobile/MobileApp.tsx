@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { tauriNotesApi, type NotesApi } from "../api";
+import { NotesStore } from "../notesStore";
 import { MobileIcon, type MobileIconName } from "./MobileIcon";
+import { MobileToday } from "./MobileToday";
 import "./mobile.css";
 
 /**
@@ -20,16 +23,23 @@ const sections = [
 
 export type MobileSection = (typeof sections)[number]["id"];
 
-export function MobileApp() {
+export function MobileApp({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // Today, because writing today down is what the app is for; every other
   // section is somewhere you go on purpose.
   const [section, setSection] = useState<MobileSection>("today");
   const open = sections.find((candidate) => candidate.id === section) ?? sections[0];
+  // One store for the whole shell: the sections are views of the same notes,
+  // and a store per tab would give each its own revision to argue with.
+  const store = useMemo(() => new NotesStore(api), [api]);
 
   return (
     <div className="mobile-app">
       <main className="mobile-screen" id={`mobile-panel-${open.id}`} role="tabpanel">
-        <h1 className="mobile-screen-title">{open.label}</h1>
+        {section === "today" ? (
+          <MobileToday store={store} />
+        ) : (
+          <h1 className="mobile-screen-title">{open.label}</h1>
+        )}
       </main>
       <nav className="mobile-tabs" aria-label="Sections" role="tablist">
         {sections.map((candidate) => (
