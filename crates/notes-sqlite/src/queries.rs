@@ -85,13 +85,14 @@ fn page_id_sql() -> String {
 /// so a page with enough children of its own would push the pages after it out
 /// of the answer.
 ///
-/// This parent set is written three times. The window answers the same question
-/// of a receipt rather than of SQLite (`storeSupport.ts::isPageParent`), and
-/// search asks which page a row is *in* rather than which rows are pages, with
-/// the same set inlined into its text (`page_id_sql` above). A new page rule
-/// lands here first -- go and widen both of those too, or the list the window
-/// keeps and the list a restart reads stop agreeing, and a hit inside the new
-/// kind of page names the wrong one.
+/// This parent set is copied, not shared: the window answers the same question
+/// of a receipt rather than of SQLite (`storeSupport.ts::isPageParent`), search
+/// asks which page a row is *in* (`page_id_sql` above), and the vault export
+/// writes the pair into several statements of its own. `grep Sm91cm5hbHMA` is
+/// what finds them -- no list here stays exhaustive. A new page rule lands here
+/// first, then go and widen every copy the grep turns up, or the list the window
+/// keeps and the list a restart reads stop agreeing, and a row of the new kind
+/// is filed under the wrong page.
 pub(crate) fn pages(connection: &Connection) -> Result<Vec<PageSummary>, StorageError> {
     let mut statement = connection
         .prepare(
