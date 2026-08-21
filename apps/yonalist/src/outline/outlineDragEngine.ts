@@ -28,6 +28,8 @@ export interface DragGesture {
   readonly selectedCount: number | null;
   readonly startX: number;
   readonly startY: number;
+  /** What is doing the pointing, which decides how far it must move to mean it. */
+  readonly pointerType: string;
   readonly captureTarget: HTMLButtonElement;
   readonly sourceScope: HTMLElement;
   total: number | null;

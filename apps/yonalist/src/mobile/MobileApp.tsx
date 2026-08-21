@@ -1,9 +1,10 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import { tauriNotesApi, type NotesApi } from "../api";
 import { NotesStore } from "../notesStore";
 import { MobileIcon, type MobileIconName } from "./MobileIcon";
 import { MobileToday } from "./MobileToday";
 import { MobileAccessoryBar } from "./MobileAccessoryBar";
+import { useDragAutoscroll } from "./useDragAutoscroll";
 import { useKeyboardInset } from "./useKeyboardInset";
 import "./mobile.css";
 
@@ -34,6 +35,8 @@ export function MobileApp({ api = tauriNotesApi }: { readonly api?: NotesApi }) 
   // and a store per tab would give each its own revision to argue with.
   const store = useMemo(() => new NotesStore(api), [api]);
   const keyboard = useKeyboardInset();
+  const screen = useRef<HTMLElement>(null);
+  useDragAutoscroll(screen);
 
   return (
     <div
@@ -41,7 +44,7 @@ export function MobileApp({ api = tauriNotesApi }: { readonly api?: NotesApi }) 
       data-keyboard={keyboard > 0 ? "up" : undefined}
       style={{ "--mobile-keyboard": `${keyboard}px` } as CSSProperties}
     >
-      <main className="mobile-screen" id={`mobile-panel-${open.id}`} role="tabpanel">
+      <main ref={screen} className="mobile-screen" id={`mobile-panel-${open.id}`} role="tabpanel">
         {section === "today" ? (
           <MobileToday store={store} />
         ) : (

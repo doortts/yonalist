@@ -1,17 +1,21 @@
 import type { CSSProperties } from "react";
+import { dragPreviewOffset } from "./dragPreviewOffset";
 
 export function OutlineDragPreview({
   labels,
   total,
   x,
-  y
+  y,
+  pointerType
 }: {
   readonly labels: readonly string[];
   readonly total: number;
   readonly x: number;
   readonly y: number;
+  readonly pointerType?: string;
 }) {
   const multiple = total > 1;
+  const offset = dragPreviewOffset(pointerType);
   return (
     <div
       style={{
@@ -19,7 +23,7 @@ export function OutlineDragPreview({
         inset: 0,
         zIndex: 1000,
         pointerEvents: "none",
-        transform: `translate3d(${x + 12}px, ${y + 12}px, 0)`
+        transform: `translate3d(${x + offset.x}px, ${y + offset.y}px, 0)`
       } as CSSProperties}
     >
       <div

@@ -14,8 +14,8 @@ import type {
   OutlineDragHost,
   UseOutlineDragInput
 } from "./outlineDragEngine";
+import { activationDistance } from "./dragActivation";
 
-const ACTIVATION_DISTANCE = 4;
 const DRAGGING_CLASS = "is-outline-dragging";
 const NO_ROOT_IDS: readonly string[] = [];
 const NO_DRAG_SOURCES: ReadonlySet<string> = new Set();
@@ -123,7 +123,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
           event.clientX - gesture.startX,
           event.clientY - gesture.startY
         );
-        if (distance < ACTIVATION_DISTANCE) return;
+        if (distance < activationDistance(gesture.pointerType)) return;
         gesture.dragging = true;
         document.body.classList.add(DRAGGING_CLASS);
       }
@@ -192,6 +192,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
         : null,
       startX: event.clientX,
       startY: event.clientY,
+      pointerType: event.pointerType,
       captureTarget: event.currentTarget,
       sourceScope,
       total: null,
@@ -231,7 +232,10 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
   const preview = pointer ? {
     ...pointer,
     labels: draggedRootIds.map((id) => input.labelForId(id)),
-    total: draggedTotal
+    total: draggedTotal,
+    // Where the ghost sits depends on what is holding it: an arrow hides
+    // nothing, a finger hides the row it is on.
+    pointerType: gestureRef.current?.pointerType
   } : null;
   const dropTarget = plan && targetScope ? { plan, scope: targetScope } : null;
   return { announcement, dropTarget, plan, preview, rowProps };
