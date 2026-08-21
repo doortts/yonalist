@@ -1,6 +1,13 @@
 {
   "build": {
+    "beforeDevCommand": "npm run dev:mobile",
+    "beforeBuildCommand": "npm run build:mobile",
     "frontendDist": "../dist-mobile",
     "devUrl": "http://127.0.0.1:1422"
+  },
+  "bundle": {
+    "iOS": {
+      "developmentTeam": "5VD4ZK536F"
+    }
   }
 }
