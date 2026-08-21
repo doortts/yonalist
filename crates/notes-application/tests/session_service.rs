@@ -705,3 +705,50 @@ fn merging_into_a_parent_survives_a_write_landing_mid_gesture() {
     assert_eq!(storage.children("parent"), vec!["row".to_owned()]);
     assert_eq!(storage.children("row"), vec!["child".to_owned()]);
 }
+
+/// A command whose plan comes out empty wrote nothing, so there is nothing for
+/// ⌘Z to take back. Recorded anyway, it spends a press on nothing and throws
+/// away the redo stack -- and empty plans are ordinary now that a second
+/// creation of the Journals node is answered by the node already there.
+#[test]
+fn a_command_that_writes_nothing_is_not_something_to_undo() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    service
+        .execute(command(
+            "create-row",
+            0,
+            IpcNotesCommand::CreateNode {
+                id: "row".into(),
+                parent_id: "root".into(),
+                before_id: None,
+                text: "Row".into(),
+            },
+        ))
+        .unwrap();
+    service
+        .undo(HistoryRequest {
+            session_id: "session".into(),
+            base_revision: 1,
+        })
+        .unwrap();
+
+    // Already open, and asked to open: the plan has nothing in it.
+    let receipt = service
+        .execute(command(
+            "collapse",
+            2,
+            IpcNotesCommand::SetCollapsed {
+                id: "root".into(),
+                collapsed: false,
+            },
+        ))
+        .unwrap();
+
+    assert_eq!(
+        (receipt.history.undo_depth, receipt.history.redo_depth),
+        (0, 1),
+        "nothing was written, so the stacks are as they were"
+    );
+    assert!(receipt.history.can_redo, "the redo the user still has");
+}
