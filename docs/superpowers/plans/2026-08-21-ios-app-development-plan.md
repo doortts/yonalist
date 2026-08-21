@@ -159,7 +159,7 @@ vault에서는 못 쓴다. 다행히 `vault_watch.rs:30`에 이미 60초마다 �
 | 0.2 | `[lib] crate-type` + `mobile_entry_point` | `src-tauri/Cargo.toml`, `src/lib.rs`, `src/main.rs` | `cargo build --target aarch64-apple-ios-sim` 링크 실패 | staticlib이 나오고 데스크톱 빌드가 그대로 통과한다 |
 | 0.3 | 데스크톱 전용 코드 `cfg` 게이트 | `lib.rs`(창 생성·vault 선택·내보내기), `vault_watch.rs` | iOS 타깃 컴파일 오류 | iOS 타깃이 컴파일되고 `cargo test --workspace`가 데스크톱에서 그대로 통과한다 |
 | 0.4 | `tauri ios init` + iOS 설정·아이콘 — **통과** | `gen/apple/`, `apps/yonalist/package.json` | Xcode 스크립트 단계가 `Missing script: "tauri"`로 죽는다 | 시뮬레이터에서 앱이 뜨고 화면이 그려진다 |
-| 0.5 | iOS의 기기 식별 — **미해결, 설계 필요** | `crates/notes-sync/src/hlc.rs`, iOS 플러그인 | `machine_seed()`가 iOS에서 `None`이라 `sync_meta`가 비어 있다 | iOS가 재설치를 넘겨도 같은 기기로 보인다 |
+| 0.5 | iOS의 기기 식별 — **통과** | `notes-sync/src/machine.rs`(신규), `hlc.rs`, `notes-sqlite/src/worker.rs` | 재설치가 `9f7ce653`을 `996ab965`로 바꾼다 | iOS가 재설치를 넘겨도 같은 기기로 보인다 |
 
 **단계 증거:** iPhone 15 Pro 시뮬레이터에서 앱이 실행되고, Rust 쪽 `notes_bootstrap`
 한 번이 응답한다. 이때 vault는 앱 로컬 `Documents/`다.
@@ -238,6 +238,37 @@ iPhone 15 Pro 시뮬레이터에 올렸고, 화면이 그려졌다. UI에서 `Ne
 **이 거부는 버그가 아니라 설계다.** 주석이 이유를 적어 놨다 — 무작위로 뽑은 기기
 id는 재설치 때마다 바뀌고, 공유 폴더에 서로 다투는 기기 둘이 남는다. 그래서 iOS의
 안정된 신원을 무엇으로 삼을지는 패치가 아니라 결정이고, 0.5로 따로 뺐다.
+
+#### 0.5 결과 (2026-08-21)
+
+**통과했다. iOS에서 백엔드가 산다.** Keychain으로 갔고, 고칠 곳이 하나가 아니라
+둘이었다 — 어느 하나만 고치면 id는 여전히 흔들린다.
+
+**씨앗.** iOS에는 `gethostuuid`가 없으므로 값을 한 번 뽑아 Keychain에 둔다. 앱을
+지워도 남는 유일한 저장소이고, iCloud의 vault도 앱보다 오래 남기 때문에 그게
+필요하다. Keychain Services는 두 애플 플랫폼에서 같은 C API라 **Swift 플러그인이
+필요 없었다** — `security-framework`를 iOS 타깃 전용 의존성으로 넣었고, 락에 이미
+있던 `core-foundation` 덕에 크레이트 두 개만 늘고 다른 타깃은 그대로다.
+
+속성 둘이 의미를 다 짊어지는데 둘 다 기본값이 아니다. **동기화 끔** — iCloud
+Keychain에 올라간 항목은 두 폰에 신원 하나를 쥐여 준다. **`AfterFirstUnlock
+ThisDeviceOnly`** — `ThisDeviceOnly`가 백업에서 빼 주므로 백업 하나를 두 폰에
+복원해도 신원이 겹치지 않고, `AfterFirstUnlock`이라 잠금 화면 상태의 실행에서도
+읽힌다.
+
+**범위.** `device_scope`가 데이터베이스의 절대 경로를 넘기는데, iOS에서 그 경로는
+시스템이 설치마다 이름을 바꾸는 컨테이너 디렉터리로 시작한다. 그래서 씨앗을
+붙잡아도 id가 움직였다 — `9f7ce653`으로 재고, 재설치했더니 `996ab965`. 안정된 것은
+앱 **안에서의** 위치이므로 iOS에서만 컨테이너 앞부분을 떼고 다른 플랫폼은 경로를
+통째로 유지한다.
+
+`hlc.rs`가 493줄이라 `machine_seed`는 새 모듈로 옮겼다. get-or-create 분기를
+Keychain 호출과 떼어 놓아서 모든 플랫폼에서 테스트한다 — 다섯 갈래, 경합에서 진
+쓰기와 되읽을 것도 없이 실패한 쓰기를 포함한다. 뒤엣것은 저장하지 못한 값을 건네는
+대신 `None`을 답해야 한다.
+
+**시뮬레이터 증거:** 설치 → `f43dfb4e`, 삭제, 재설치. 컨테이너는
+`6C66529C` → `59551852`로 바뀌었고 id는 두 번 다 `f43dfb4e`였다.
 
 ---
 
