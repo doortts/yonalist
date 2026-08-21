@@ -1918,6 +1918,69 @@ fn naming_the_recovery_page_as_a_parent_does_not_take_back_its_write() {
     );
 }
 
+/// The page-document twin of `the_trash_does_not_stand_in_for_a_parent_that_is_\
+/// already_here`. A document whose parent this device already holds must leave
+/// that node alone: the stand-in exists for a parent nobody has seen. Emptying
+/// a real note's reading would lose it every later comparison, and taking its
+/// mark would drop a write it is owed. Two things keep the stand-in off it —
+/// the existence check and the insert's row count — and this states the outcome
+/// they are both for, so a rewrite that drops one has something to answer to.
+#[test]
+fn a_child_document_does_not_stand_in_for_a_parent_that_is_already_here() {
+    let parent = "Nd0000000001";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2a3f2");
+    // A note with no words yet is an ordinary state — a row somebody just made
+    // and has not typed into. It is also the only shape the stand-in's update
+    // would touch.
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![node(parent, &seeded, "")], &seeded)),
+        &input(),
+        None,
+    )
+    .expect("seed");
+    let before = hlc_of(&transaction, parent);
+    transaction
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [parent],
+        )
+        .expect("owed");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(child_of(parent, &seeded)),
+        &child_input(),
+        None,
+    )
+    .expect("merge the child");
+
+    assert_eq!(
+        hlc_of(&transaction, parent),
+        before,
+        "a note that is already here keeps its reading, or it loses every \
+         comparison from now on"
+    );
+    let waiting: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [parent],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        waiting, 1,
+        "and it still owes the write it owed before the child arrived"
+    );
+}
+
 /// A copy some sync client wrote holds the same document id, so recording it
 /// would move that document's file to the copy's name. Every later write would
 /// go into the copy while the real file went stale — and the other device,
