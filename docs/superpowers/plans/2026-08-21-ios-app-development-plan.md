@@ -158,7 +158,8 @@ vault에서는 못 쓴다. 다행히 `vault_watch.rs:30`에 이미 60초마다 �
 | 0.1b | `tauriV2.mjs`의 rustup 경로 탐지를 고친다 — **통과** | `scripts/rustupToolchain.mjs`(신규), `scripts/tauriV2.mjs` | 넘겨짚는 옛 로직이 rustup이 알려준 경로를 무시하고 `null`을 낸다 | rustup이 어디에 깔려 있든 고정 툴체인을 쓴다 |
 | 0.2 | `[lib] crate-type` + `mobile_entry_point` | `src-tauri/Cargo.toml`, `src/lib.rs`, `src/main.rs` | `cargo build --target aarch64-apple-ios-sim` 링크 실패 | staticlib이 나오고 데스크톱 빌드가 그대로 통과한다 |
 | 0.3 | 데스크톱 전용 코드 `cfg` 게이트 | `lib.rs`(창 생성·vault 선택·내보내기), `vault_watch.rs` | iOS 타깃 컴파일 오류 | iOS 타깃이 컴파일되고 `cargo test --workspace`가 데스크톱에서 그대로 통과한다 |
-| 0.4 | `tauri ios init` + iOS 설정·아이콘 | `gen/apple/`, `tauri.ios.conf.json`, 아이콘 세트 | `tauri ios build --debug` 실패 | 빈 화면이라도 시뮬레이터에서 앱이 뜬다 |
+| 0.4 | `tauri ios init` + iOS 설정·아이콘 — **통과** | `gen/apple/`, `apps/yonalist/package.json` | Xcode 스크립트 단계가 `Missing script: "tauri"`로 죽는다 | 시뮬레이터에서 앱이 뜨고 화면이 그려진다 |
+| 0.5 | iOS의 기기 식별 — **미해결, 설계 필요** | `crates/notes-sync/src/hlc.rs`, iOS 플러그인 | `machine_seed()`가 iOS에서 `None`이라 `sync_meta`가 비어 있다 | iOS가 재설치를 넘겨도 같은 기기로 보인다 |
 
 **단계 증거:** iPhone 15 Pro 시뮬레이터에서 앱이 실행되고, Rust 쪽 `notes_bootstrap`
 한 번이 응답한다. 이때 vault는 앱 로컬 `Documents/`다.
@@ -202,6 +203,41 @@ PATH 보정 없이 Homebrew rust로 떨어진다. 데스크톱은 호스트 타�
 ```bash
 ~/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo build -p notes-sqlite --target aarch64-apple-ios-sim
 ```
+
+
+#### 0.4 결과 (2026-08-21)
+
+**앱이 뜬다. 백엔드는 아직 안 산다.**
+
+된 것: `tauri ios init`이 `gen/apple`을 만들었고, `aarch64-sim`으로 빌드해서
+iPhone 15 Pro 시뮬레이터에 올렸고, 화면이 그려졌다. UI에서 `New page`를 눌러
+페이지가 만들어지고 소프트 키보드로 넣은 제목이 그대로 렌더됐다. 터치 입력과
+웹뷰가 멀쩡하다는 뜻이다.
+
+이것으로 0.2에서 남겨 둔 질문이 풀렸다. **`setup()`에서 웹뷰를 만드는 것이 iOS
+에서 실제로 동작한다.** 창은 Rust가 계속 소유하고 `tauri.ios.conf.json`에 창을
+따로 선언할 필요가 없다 — A안이 맞았고 B안은 필요 없다.
+
+가는 길에 걸린 것: Xcode의 `Build Rust Code` 단계가 `gen/apple`에서
+`npm run -- tauri ios xcode-script`를 부르는데, npm이 가장 가까운 패키지인 앱
+워크스페이스로 해석하고 거기엔 `tauri` 스크립트가 없어서 죽었다. 래퍼는 루트에만
+있었다. 앱 패키지에 루트 래퍼로 넘기는 `tauri` 스크립트를 추가해서 풀었다.
+`project.yml`이 이 명령을 그대로 박아 두므로 재생성해도 살아남는 방식이다.
+
+**안 된 것 — 모든 명령이 `Notes session is not ready`로 답한다.**
+
+`SqliteStorage::open`이 기기 id를 줄 수 없는 데이터베이스를 거부한다. iOS에서는
+줄 수가 없다: `hlc.rs:166`의 `machine_seed()`가 `cfg(target_os = "macos")`로 묶인
+`gethostuuid`이고, `:180`의 비-macOS 분기는 `None`을 돌려준다. 그러면
+`provisioned_device_id`가 `StorageError::Unavailable`을 낸다.
+
+증거는 앱 컨테이너의 데이터베이스다. 스키마는 테이블 19개가 전부 만들어져 있는데
+`ensure_device_id`가 쓰는 유일한 테이블인 `sync_meta`만 비어 있다. 딱 그 지점에서
+멈췄다는 뜻이다.
+
+**이 거부는 버그가 아니라 설계다.** 주석이 이유를 적어 놨다 — 무작위로 뽑은 기기
+id는 재설치 때마다 바뀌고, 공유 폴더에 서로 다투는 기기 둘이 남는다. 그래서 iOS의
+안정된 신원을 무엇으로 삼을지는 패치가 아니라 결정이고, 0.5로 따로 뺐다.
 
 ---
 
