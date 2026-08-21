@@ -1,5 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<!-- The vault lives in this app's own iCloud container. An iOS app cannot
+	     keep reading an arbitrary iCloud Drive folder, but its own ubiquity
+	     container is always reachable, and the same folder shows up in iCloud
+	     Drive on the Mac, which is how the desktop is pointed at it. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.doortts.yonalist.v2</string>
+	</array>
+	<key>com.apple.developer.ubiquity-container-identifiers</key>
+	<array>
+		<string>iCloud.com.doortts.yonalist.v2</string>
+	</array>
+	<!-- Documents, not CloudKit: the vault is Markdown files, and the merge
+	     that reconciles them is this app's own. -->
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudDocuments</string>
+	</array>
+</dict>
 </plist>
