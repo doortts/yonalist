@@ -184,3 +184,15 @@ fn planning_over_five_thousand_siblings_stays_bounded() {
     assert_eq!(patch.forward.len(), 1);
     assert!(elapsed < Duration::from_millis(500));
 }
+
+/// The Journals node's id is written into every journal day's file as its
+/// `parent:`, and a parent that is not a block id quarantines the file that
+/// states it. A readable name like `yonalist-journals` cannot be this id.
+#[test]
+fn the_journals_id_is_a_block_id_the_vault_can_carry() {
+    assert!(
+        notes_core::is_block_id(notes_core::JOURNALS_ID),
+        "got {}",
+        notes_core::JOURNALS_ID
+    );
+}

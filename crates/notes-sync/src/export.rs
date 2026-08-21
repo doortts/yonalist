@@ -226,7 +226,11 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
                  SELECT climb.node_id, p.id, climb.deleted
                  FROM climb JOIN notes_nodes n ON n.id = climb.at
                  JOIN notes_nodes p ON p.id = n.parent_id
-                 WHERE n.parent_id IS NOT NULL AND n.parent_id <> 'root'
+                 -- A child of root owns a document, and so does a child of the
+                 -- Journals node (`notes_core::JOURNALS_ID`): a journal day
+                 -- keeps the folder whose name says which day it holds.
+                 WHERE n.parent_id IS NOT NULL
+                   AND n.parent_id NOT IN ('root', 'Sm91cm5hbHMA')
                    -- A node that owns a document of its own is where the climb
                    -- ends: its subtree is that document's, not its parent's.
                    AND NOT EXISTS (
@@ -240,7 +244,8 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
              WHERE at = 'root'
                 OR EXISTS (SELECT 1 FROM sync_documents d
                            WHERE d.root_id = at AND d.retiring = 0)
-                OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
+                OR (SELECT parent_id FROM notes_nodes WHERE id = at)
+                       IN ('root', 'Sm91cm5hbHMA')
              UNION
              -- A deletion being undone leaves nothing dirty that says so: the
              -- restored row is back at `deleted = 0`, and a row hard deleted
@@ -461,7 +466,8 @@ pub fn begin_retirement(transaction: &Transaction<'_>) -> Result<usize, ExportEr
             "UPDATE sync_documents SET retiring = 0
              WHERE retiring = 1
                AND root_id IN (SELECT id FROM notes_nodes
-                               WHERE parent_id = 'root' AND deleted = 0)",
+                               WHERE parent_id IN ('root', 'Sm91cm5hbHMA')
+                                 AND deleted = 0)",
         )
         .and_then(|mut statement| statement.execute([]))
         .map_err(|error| error.to_string())?;
@@ -474,7 +480,11 @@ pub fn begin_retirement(transaction: &Transaction<'_>) -> Result<usize, ExportEr
                -- node that is not root; it never was a page and cannot stop
                -- being one.
                AND d.is_page = 1
-               AND d.retiring = 0 AND n.deleted = 0 AND n.parent_id IS NOT 'root'",
+               AND d.retiring = 0 AND n.deleted = 0
+               -- A day that has just moved under the Journals node still
+               -- carries the `is_page` its last export recorded, so the
+               -- parent is what answers here.
+               AND n.parent_id IS NOT 'root' AND n.parent_id IS NOT 'Sm91cm5hbHMA'",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement

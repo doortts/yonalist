@@ -1068,3 +1068,68 @@ fn bytes_whose_file_is_not_local_are_never_replaced() {
          numbered copy behind"
     );
 }
+
+const JOURNALS_ID: &str = notes_core::JOURNALS_ID;
+const DAY_ID: &str = "Day000000001";
+
+/// A journal day and the node it hangs from, both stamped, with only the day
+/// waiting to go out.
+fn seed_journal_day(connection: &Connection) {
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', 8589934592, 'bullet', 'Journals', ?3),
+                    (?2, ?1, 4294967296, 'bullet', '2026-08-21', ?3)",
+            rusqlite::params![JOURNALS_ID, DAY_ID, stamp(7)],
+        )
+        .expect("rows");
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [DAY_ID],
+        )
+        .expect("dirty");
+}
+
+/// A day hangs from the Journals node rather than from root, and it still owns
+/// its own file. Written into the Journals document instead, a year of days
+/// would share one file and each would lose the folder whose name says which
+/// day it holds.
+#[test]
+fn a_day_under_the_journals_node_owns_its_own_document() {
+    let mut connection = database();
+    seed_journal_day(&connection);
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert!(
+        pending.iter().any(|id| id == DAY_ID),
+        "the day is the document its rows belong to, not the Journals page: {pending:?}"
+    );
+}
+
+/// The retirement pass reads "no longer a child of root" as a page being folded
+/// into whatever it joined. A day that has just moved under the Journals node
+/// still carries `is_page = 1` from its last export, so without this the very
+/// next pass would take its folder and inline it.
+#[test]
+fn a_day_under_the_journals_node_is_not_retired_for_hanging_there() {
+    let mut connection = database();
+    seed_journal_day(&connection);
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, is_page)
+             VALUES (?1, '2026-08-21-Day000000001/README.md', 1)",
+            [DAY_ID],
+        )
+        .expect("the day's document");
+
+    let transaction = connection.transaction().expect("begin");
+    let leaving = notes_sync::export::begin_retirement(&transaction).expect("retirement");
+
+    assert_eq!(
+        leaving, 0,
+        "the day is where a day belongs, and its folder is its own"
+    );
+}

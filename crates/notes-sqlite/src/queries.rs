@@ -48,22 +48,23 @@ fn anchor_sql() -> String {
     )
 }
 
-/// A page is a live child of the root and nothing else, which is why this
-/// asks the parent index rather than reading the root's window: that window
-/// carries the whole forest depth first and stops at a row limit, so a page
-/// with enough children of its own would push the pages after it out of the
-/// answer.
+/// A page is a live child of the root, or of the Journals node -- a journal day
+/// hangs from that rather than from the root, and it is still the page its date
+/// names. This asks the parent index rather than reading the root's window:
+/// that window carries the whole forest depth first and stops at a row limit,
+/// so a page with enough children of its own would push the pages after it out
+/// of the answer.
 pub(crate) fn pages(connection: &Connection) -> Result<Vec<PageSummary>, StorageError> {
     let mut statement = connection
         .prepare(
             "SELECT id, text, sort_key
              FROM notes_nodes
-             WHERE parent_id = ?1 AND deleted = 0
+             WHERE parent_id IN (?1, ?2) AND deleted = 0
              ORDER BY sort_key, id",
         )
         .map_err(internal)?;
     let pages = statement
-        .query_map([ROOT_ID], |row| {
+        .query_map([ROOT_ID, notes_core::JOURNALS_ID], |row| {
             Ok(PageSummary {
                 id: row.get(0)?,
                 title: row.get(1)?,
