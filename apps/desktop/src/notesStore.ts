@@ -436,13 +436,16 @@ export class NotesStore {
   };
 
   /**
-   * The Journals node, if that is what the page about to be written hangs from
-   * and the vault has never had one. It goes ahead of the page rather than with
-   * it: a day sent first would name a parent the backend has never heard of.
+   * The Journals node, if that is what the page about to be written hangs from.
+   * It goes ahead of the page rather than with it: a day sent first would name a
+   * parent the backend has never heard of.
    *
-   * One provisional page exists at a time, so two days cannot race here for the
-   * one node -- and the page list carries the answer the moment the creation
-   * lands, so a second day asks and finds it there.
+   * The page list only says whether the round trip is worth making. It cannot
+   * say whether the node exists -- it holds live children of Home and of the
+   * Journals node alone, so a node dragged elsewhere or thrown away is missing
+   * from it while the id is very much taken. The backend answers that: a
+   * creation of this one id is satisfied by the node already there, and takes
+   * it back out of the trash when that is where it is.
    */
   private materializeParent(parentId: string): Promise<unknown> {
     if (parentId !== JOURNALS_ID ||

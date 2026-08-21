@@ -75,6 +75,17 @@ export const ROOT_ID = "root";
  */
 export const JOURNALS_ID = "Sm91cm5hbHMA";
 
+/**
+ * Whether a row belongs in the page list: a live child of Home, or of the
+ * Journals node -- a day hangs from that one and is still the page its date
+ * names, which is what `findJournalPage`, the calendar, the feed and carry-over
+ * all read. The storage layer's `queries.rs::pages` is the same rule in SQL and
+ * has to stay the same answer; the tests on either side of the seam say so.
+ */
+export function isPageParent(parentId: string | null): boolean {
+  return parentId === ROOT_ID || parentId === JOURNALS_ID;
+}
+
 export const DRAFT_DEBOUNCE_MS = 300;
 /**
  * How long an uncommitted typing run may postpone SQLite. The debounce alone

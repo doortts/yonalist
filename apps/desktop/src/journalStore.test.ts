@@ -155,6 +155,50 @@ describe("openJournal", () => {
     ).toEqual([]);
   });
 
+  it("finds the day again once its receipt has landed", async () => {
+    const { store, api } = await readyStore([
+      { id: "page-1", title: "Page", sortKey: 1_024 },
+      { id: JOURNALS_ID, title: "Journals", sortKey: 2_048 }
+    ]);
+    // The receipt states what landed, and the page list it leaves behind is
+    // what the next Today press reads.
+    let revision = 1;
+    vi.mocked(api.execute).mockImplementation(async (envelope) => {
+      const command = envelope.command;
+      revision += 1;
+      return {
+        revision,
+        changedNodes: command.kind === "createNode"
+          ? [{
+            id: command.id,
+            parentId: command.parent_id,
+            sortKey: 4_096,
+            kind: "bullet",
+            image: null,
+            text: command.text,
+            note: "",
+            marker: "bullet",
+            collapsed: false,
+            completed: false,
+            starred: false,
+            deleted: false
+          }]
+          : [],
+        deletedIds: [],
+        history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+      };
+    });
+
+    const first = await store.openJournal("2026-08-21");
+    await store.createNode(first, "first line");
+    const again = await store.openJournal("2026-08-21");
+
+    expect(again).toBe(first);
+    expect(commands(api).filter((command) =>
+      command.kind === "createNode" && command.text === "2026-08-21"))
+      .toHaveLength(1);
+  });
+
   it("shows the date as the open page's title before anything is written", async () => {
     const { store } = await readyStore([
       { id: "page-1", title: "Page", sortKey: 1_024 }
