@@ -182,6 +182,9 @@ impl NotesTree {
         position: Position,
         text: String,
     ) -> Result<(), DomainError> {
+        // Ahead of everything below, the Journals node included: a creation
+        // naming a parent that is not there is malformed however it is answered.
+        self.ensure_parent(&parent_id)?;
         // The one id every device already agrees on (`crate::JOURNALS_ID`), so
         // the same creation arrives from whoever writes their first journal
         // day. Refusing it wedges journaling for good: the day right behind it
@@ -199,7 +202,6 @@ impl NotesTree {
             Some(_) if journals => {}
             _ => self.ensure_new_id(&id)?,
         }
-        self.ensure_parent(&parent_id)?;
         self.nodes.insert(
             id.clone(),
             NoteNode::child(id.clone(), parent_id.clone(), SORT_KEY_STEP, text),
