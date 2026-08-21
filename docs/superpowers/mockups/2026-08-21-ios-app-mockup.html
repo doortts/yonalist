@@ -193,6 +193,32 @@
   }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--done); }
 
+  /* 드래그 중 — 데스크톱 notes.css의 드롭 선·고스트·출처 틴트와 같은 규칙.
+     고스트와 손가락은 프레임 기준 절대 좌표라 드롭 선 높이에 맞춰 둔다. */
+  .row.source { opacity: 0.38; }
+  .drop {
+    height: 2px; background: var(--accent); border-radius: 1px;
+    margin: 3px 2px 3px 0; margin-left: 2px;
+  }
+  .drop.d1 { margin-left: 28px; }
+  .ghost {
+    position: absolute; left: 92px; top: 214px; z-index: 5;
+    display: flex; align-items: center; gap: 9px;
+    background: var(--bg-card); border: 1px solid var(--accent);
+    border-radius: 9px; padding: 8px 12px; font-size: 16px;
+    box-shadow: 0 10px 24px rgb(23 27 33 / 22%);
+  }
+  .ghost .badge2 {
+    min-width: 20px; height: 20px; border-radius: 10px; background: var(--accent);
+    color: var(--accent-contrast); font-size: 12px; font-weight: 700;
+    display: grid; place-items: center; padding: 0 5px;
+  }
+  .finger {
+    position: absolute; left: 150px; top: 252px; z-index: 6;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: rgb(37 99 235 / 16%); border: 1.5px solid rgb(37 99 235 / 45%);
+  }
+
   /* ---------- Tabler Icons v3.46.0 (outline) 글리프 ----------
      아이콘은 Tabler가 1순위다(MIT, Copyright (c) 2020-2026 Paweł Kuna).
      Tabler에 맞는 글리프가 없을 때만 기존 lucide-react로 내려간다.
@@ -244,7 +270,8 @@
   iPhone 15 Pro(393×852pt) 기준. 프레임 안 색은 데스크톱 <code>styles.css</code>의 light 토큰
   그대로다. 탭 네 개(Today · Journals · Pages · Search)가 데스크톱 사이드바를 대신하고,
   들여쓰기·완료 토글은 키보드 액세서리 바로 옮겼다. 설계 문서:
-  <code>docs/superpowers/plans/2026-08-21-ios-app-v1.md</code> · 아이콘 정책:
+  <code>docs/superpowers/plans/2026-08-21-ios-app-v1.md</code> · 개발 계획:
+  <code>docs/superpowers/plans/2026-08-21-ios-app-development-plan.md</code> · 아이콘 정책:
   <code>docs/design/icons.md</code>
 </p>
 
@@ -391,7 +418,47 @@
       </div>
       <div class="homebar"></div>
     </div>
-    <div class="note">불릿 길게 누르기 = zoom(그 줄이 새 루트). 위 breadcrumb으로 되돌아간다. 드래그 재배치는 v1 비대상 — 이동은 액세서리 바의 indent 버튼과 잘라 붙이기로 감당.</div>
+    <div class="note">불릿 길게 누르기 = zoom(그 줄이 새 루트). 위 breadcrumb으로 되돌아간다.</div>
+  </div>
+
+  <!-- ⑦ 드래그 재배치 -->
+  <div class="cell">
+    <div class="cell-title">⑦ 드래그 재배치 <small>불릿을 끌고 있는 중</small></div>
+    <div class="phone">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
+      <div class="nav">
+        <div>
+          <div class="title">Aug 21, 2026</div>
+          <div class="sub">Thursday · Today</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-chevron-left"/></svg></div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-chevron-right"/></svg></div>
+      </div>
+      <div class="body">
+        <div class="row"><span class="chk done"><svg class="ic thick"><use href="#i-check"/></svg></span><span class="txt" style="color:var(--text-3);text-decoration:line-through">Reply to design review</span></div>
+        <div class="row source"><span class="bullet"></span><span class="txt">Draft iOS sync plan</span></div>
+        <div class="row d1 source"><span class="bullet"></span><span class="txt">iCloud container is the vault</span></div>
+        <div class="row"><span class="bullet"></span><span class="txt">Book dentist</span></div>
+        <div class="drop d1"></div>
+        <div class="row d1"><span class="bullet"></span><span class="txt">Call the clinic first</span></div>
+        <div class="row"><span class="bullet"></span><span class="txt">Read TN2336 again</span></div>
+        <div class="ghost">
+          <span class="bullet"></span><span>Draft iOS sync plan</span><span class="badge2">2</span>
+        </div>
+        <div class="finger"></div>
+      </div>
+      <div class="homebar"></div>
+    </div>
+    <div class="note">
+      데스크톱 엔진 그대로다. <b>세로</b>로 끌면 넣을 자리가, <b>가로</b>로 끌면
+      깊이가 정해진다(한 단계 36px). 파란 선이 결과 위치와 깊이를 미리 보여주고,
+      끌리는 줄은 자식까지 흐려진다. 여러 줄을 골라 끌면 고스트에 개수가 붙고
+      한 번의 <code>moveNodes</code>로 옮겨져 되돌리기 한 번에 돌아온다.
+      터치에서 새로 필요한 것: 44pt 손잡이, 손가락 떨림보다 큰 활성화 거리,
+      가장자리 자동 스크롤.
+    </div>
   </div>
 
   <!-- ⑤ Search -->
