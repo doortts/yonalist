@@ -1,6 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { outlinePane } from "./outline/outlinePaneRegistry";
-import { ROOT_ID } from "./store/storeSupport";
+import { isPageParent } from "./store/storeSupport";
 
 export type PaneId = "primary" | "secondary";
 
@@ -111,11 +111,12 @@ export function zoomEntryFocus(
 }
 
 /**
- * The page a row belongs to: the ancestor of it that is a child of the root. A
- * zoom is still inside its page, so this is the page the sidebar names however
- * deep the reader has gone. Null once the walk leaves the loaded rows -- on a
- * page other than home the page's own node is kept out of them, and the open
- * page already answers for that case.
+ * The page a row belongs to: the nearest ancestor of it that the page rule
+ * names -- a child of the root, or of the Journals node a journal day hangs
+ * from. A zoom is still inside its page, so this is the page the sidebar names
+ * however deep the reader has gone. Null once the walk leaves the loaded rows
+ * -- on a page other than home the page's own node is kept out of them, and the
+ * open page already answers for that case.
  */
 export function owningPageId(
   nodeId: string | null,
@@ -125,7 +126,7 @@ export function owningPageId(
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const walked = new Set<string>();
   let current = byId.get(nodeId);
-  while (current && current.parentId !== ROOT_ID) {
+  while (current && !isPageParent(current.parentId)) {
     if (walked.has(current.id)) return null;
     walked.add(current.id);
     current = current.parentId ? byId.get(current.parentId) : undefined;
