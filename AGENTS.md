@@ -11,6 +11,9 @@ both:
 - `.agents/skills/delivering-yonalist-changes/SKILL.md` — how a change ships
   here: contract, vertical slice, gates, evidence.
 
+When a change adds an icon, follow `docs/design/icons.md` — Tabler Icons
+first, `lucide-react` only where Tabler has no matching glyph.
+
 Keep this file concise. When a repeated project-specific failure reveals a
 workflow gap, update the repository skill rather than duplicating detailed
 instructions here. Read-only explanations and status reports may skip the

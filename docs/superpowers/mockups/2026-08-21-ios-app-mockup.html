@@ -192,14 +192,60 @@
     border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; background: var(--bg-card);
   }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--done); }
+
+  /* ---------- Tabler Icons v3.46.0 (outline) 글리프 ----------
+     아이콘은 Tabler가 1순위다(MIT, Copyright (c) 2020-2026 Paweł Kuna).
+     Tabler에 맞는 글리프가 없을 때만 기존 lucide-react로 내려간다.
+     이 시안은 `icons/outline/<name>.svg`의 24×24 path를 <symbol>로 옮겨
+     담았을 뿐이고, 구현에서는 <IconCalendarEvent size={…} />를 그대로 쓴다.
+     Tabler 기본 획도 lucide와 같은 24px·stroke 2·round라 굵기가 섞이지 않는다. */
+  .ic {
+    width: 1em; height: 1em; flex: none;
+    fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .ic.thick { stroke-width: 3; }
+  .ic.fill { fill: currentColor; stroke: none; }
+  .icon-btn .ic { width: 18px; height: 18px; }
+  .acc .ic { width: 21px; height: 21px; }
+  .carry > .ic { width: 15px; height: 15px; color: var(--accent); }
+  .chk .ic { width: 13px; height: 13px; }
+  .searchbox .ic { width: 18px; height: 18px; color: var(--text-3); }
+  .star.ic { width: 15px; height: 15px; color: var(--favorite); }
+  .cloud .ic { width: 56px; height: 56px; stroke-width: 1.4; color: var(--accent); }
 </style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-calendar-event" viewBox="0 0 24 24"><path d="M4 7a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2l0 -12" /><path d="M16 3l0 4" /><path d="M8 3l0 4" /><path d="M4 11l16 0" /><path d="M8 15h2v2h-2l0 -2" /></symbol>
+    <symbol id="i-notebook" viewBox="0 0 24 24"><path d="M6 4h11a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-11a1 1 0 0 1 -1 -1v-14a1 1 0 0 1 1 -1m3 0v18" /><path d="M13 8l2 0" /><path d="M13 12l2 0" /></symbol>
+    <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2" /><path d="M9 9l1 0" /><path d="M9 13l6 0" /><path d="M9 17l6 0" /></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M21 21l-6 -6" /></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 17.75l-6.172 3.245l1.179 -6.873l-5 -4.867l6.9 -1l3.086 -6.253l3.086 6.253l6.9 1l-5 4.867l1.179 6.873l-6.158 -3.245" /></symbol>
+    <symbol id="i-dots" viewBox="0 0 24 24"><path d="M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /></symbol>
+    <symbol id="i-arrow-bar-to-down" viewBox="0 0 24 24"><path d="M4 20l16 0" /><path d="M12 14l0 -10" /><path d="M12 14l4 -4" /><path d="M12 14l-4 -4" /></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="M15 6l-6 6l6 6" /></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="M9 6l6 6l-6 6" /></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9l6 6l6 -6" /></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10" /></symbol>
+    <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="M12 9v4" /><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0" /><path d="M12 16h.01" /></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5l0 14" /><path d="M5 12l14 0" /></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M6.657 18c-2.572 0 -4.657 -2.007 -4.657 -4.483c0 -2.475 2.085 -4.482 4.657 -4.482c.393 -1.762 1.794 -3.2 3.675 -3.773c1.88 -.572 3.956 -.193 5.444 1c1.488 1.19 2.162 3.007 1.77 4.769h.99c1.913 0 3.464 1.56 3.464 3.486c0 1.927 -1.551 3.487 -3.465 3.487h-11.878" /></symbol>
+    <symbol id="i-square-check" viewBox="0 0 24 24"><path d="M3 5a2 2 0 0 1 2 -2h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14" /><path d="M9 12l2 2l4 -4" /></symbol>
+    <symbol id="i-indent-increase" viewBox="0 0 24 24"><path d="M20 6l-11 0" /><path d="M20 12l-7 0" /><path d="M20 18l-11 0" /><path d="M4 8l4 4l-4 4" /></symbol>
+    <symbol id="i-indent-decrease" viewBox="0 0 24 24"><path d="M20 6l-7 0" /><path d="M20 12l-9 0" /><path d="M20 18l-7 0" /><path d="M8 8l-4 4l4 4" /></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M6.5 7.5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0" /><path d="M3 6v5.172a2 2 0 0 0 .586 1.414l7.71 7.71a2.41 2.41 0 0 0 3.408 0l5.592 -5.592a2.41 2.41 0 0 0 0 -3.408l-7.71 -7.71a2 2 0 0 0 -1.414 -.586h-5.172a3 3 0 0 0 -3 3" /></symbol>
+    <symbol id="i-keyboard-hide" viewBox="0 0 24 24"><path d="M2 5a2 2 0 0 1 2 -2h16a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2l0 -8" /><path d="M6 7l0 .01" /><path d="M10 7l0 .01" /><path d="M14 7l0 .01" /><path d="M18 7l0 .01" /><path d="M6 11l0 .01" /><path d="M18 11l0 .01" /><path d="M10 11l4 0" /><path d="M10 21l2 -2l2 2" /></symbol>
+  </defs>
+</svg>
 
 <h1>Yonalist iOS v1 — 화면 시안</h1>
 <p class="lede">
   iPhone 15 Pro(393×852pt) 기준. 프레임 안 색은 데스크톱 <code>styles.css</code>의 light 토큰
   그대로다. 탭 네 개(Today · Journals · Pages · Search)가 데스크톱 사이드바를 대신하고,
   들여쓰기·완료 토글은 키보드 액세서리 바로 옮겼다. 설계 문서:
-  <code>docs/superpowers/plans/2026-08-21-ios-app-v1.md</code>
+  <code>docs/superpowers/plans/2026-08-21-ios-app-v1.md</code> · 아이콘 정책:
+  <code>docs/design/icons.md</code>
 </p>
 
 <div class="board">
@@ -216,13 +262,13 @@
           <div class="sub">Thursday · Today</div>
         </div>
         <div class="spacer"></div>
-        <div class="icon-btn">←</div>
-        <div class="icon-btn">→</div>
-        <div class="icon-btn">☰</div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-chevron-left"/></svg></div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-chevron-right"/></svg></div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-dots"/></svg></div>
       </div>
       <div class="body">
-        <div class="carry">↩ 3 unfinished to-dos from last 7 days <span class="cta">Carry over</span></div>
-        <div class="row"><span class="chk done">✓</span><span class="txt done" style="color:var(--text-3);text-decoration:line-through">Reply to design review</span></div>
+        <div class="carry"><svg class="ic"><use href="#i-arrow-bar-to-down"/></svg> 3 unfinished to-dos from last 7 days <span class="cta">Carry over</span></div>
+        <div class="row"><span class="chk done"><svg class="ic thick"><use href="#i-check"/></svg></span><span class="txt done" style="color:var(--text-3);text-decoration:line-through">Reply to design review</span></div>
         <div class="row"><span class="chk doing">–</span><span class="txt">Draft iOS sync plan <span class="tag">#yonalist</span></span></div>
         <div class="row d1"><span class="bullet"></span><span class="txt">iCloud container is the vault</span></div>
         <div class="row d1 editing"><span class="bullet"></span><span class="txt">download layer is Swift plugin<span class="caret"></span></span></div>
@@ -230,16 +276,17 @@
       </div>
       <div class="kb-zone">
         <div class="acc">
-          <button>⇤</button><button>⇥</button><button>☐</button><button>＠</button><button>📅</button><button>⌄</button>
+          <button><svg class="ic"><use href="#i-indent-decrease"/></svg></button><button><svg class="ic"><use href="#i-indent-increase"/></svg></button><button><svg class="ic"><use href="#i-square-check"/></svg></button><button><svg class="ic"><use href="#i-tag"/></svg></button><button><svg class="ic"><use href="#i-calendar-event"/></svg></button><button><svg class="ic"><use href="#i-keyboard-hide"/></svg></button>
         </div>
         <div class="kb">KEYBOARD</div>
       </div>
       <div class="homebar"></div>
     </div>
     <div class="note">
-      <b>키보드 액세서리 바</b>가 데스크톱 단축키를 대신한다: 내어쓰기 ⇤ · 들여쓰기 ⇥ ·
-      To-do 전환 ☐ · 태그 ＠ · 날짜 토큰 📅 · 키보드 내리기 ⌄.
-      불릿/체크박스 탭 = ⌘↩ 3단계 완료 전환.
+      <b>키보드 액세서리 바</b>가 데스크톱 단축키를 대신한다. 왼쪽부터
+      <code>indent-decrease</code> · <code>indent-increase</code> ·
+      <code>square-check</code> · <code>tag</code> · <code>calendar-event</code> ·
+      <code>keyboard-hide</code>. 불릿/체크박스 탭 = ⌘↩ 3단계 완료 전환.
     </div>
   </div>
 
@@ -252,7 +299,7 @@
       <div class="nav">
         <div class="title">Journals</div>
         <div class="spacer"></div>
-        <div class="icon-btn">📅</div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-calendar-event"/></svg></div>
       </div>
       <div class="body">
         <div class="day">
@@ -262,7 +309,7 @@
         </div>
         <div class="day past">
           <div class="dayhead"><span class="d">Aug 20, 2026</span><span class="w">Wed</span></div>
-          <div class="row"><span class="chk done">✓</span><span class="txt">Fix dataless file guard</span></div>
+          <div class="row"><span class="chk done"><svg class="ic thick"><use href="#i-check"/></svg></span><span class="txt">Fix dataless file guard</span></div>
           <div class="row"><span class="bullet"></span><span class="txt">TN2336: bounced files need different bytes</span></div>
         </div>
         <div class="day past">
@@ -272,16 +319,16 @@
         <button class="more">Show 7 more days</button>
       </div>
       <div class="tabs">
-        <div class="tab">​<span class="glyph">☀️</span>Today</div>
-        <div class="tab on"><span class="glyph">📖</span>Journals</div>
-        <div class="tab"><span class="glyph">📄</span>Pages</div>
-        <div class="tab"><span class="glyph">🔍</span>Search</div>
+        <div class="tab">​<span class="glyph"><svg class="ic"><use href="#i-calendar-event"/></svg></span>Today</div>
+        <div class="tab on"><span class="glyph"><svg class="ic"><use href="#i-notebook"/></svg></span>Journals</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-file-text"/></svg></span>Pages</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-search"/></svg></span>Search</div>
       </div>
       <div class="homebar"></div>
     </div>
     <div class="note">
       데스크톱 저널 설계 A5·A6 그대로: <b>맨 위 하루만 편집</b>, 지난 날은 흐리게 + 읽기 전용,
-      줄을 누르면 그날 페이지로 이동. 7일씩 늘려 그린다. 📅 = 월 달력 시트.
+      줄을 누르면 그날 페이지로 이동. 7일씩 늘려 그린다. 오른쪽 <code>calendar-event</code> = 월 달력 시트.
     </div>
   </div>
 
@@ -294,24 +341,24 @@
       <div class="nav">
         <div class="title">Pages</div>
         <div class="spacer"></div>
-        <div class="icon-btn">＋</div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-plus"/></svg></div>
       </div>
       <div class="body">
-        <div class="pagerow"><span class="star">★</span> Reading list <span class="cnt">42</span></div>
-        <div class="pagerow"><span class="star">★</span> Yonalist roadmap <span class="cnt">128</span></div>
+        <div class="pagerow"><svg class="ic fill star"><use href="#i-star"/></svg> Reading list <span class="cnt">42</span></div>
+        <div class="pagerow"><svg class="ic fill star"><use href="#i-star"/></svg> Yonalist roadmap <span class="cnt">128</span></div>
         <div class="pagerow">Meeting notes <span class="cnt">36</span></div>
         <div class="pagerow">Recipes <span class="cnt">17</span></div>
         <div class="pagerow">Travel — Jeju <span class="cnt">23</span></div>
       </div>
       <div class="tabs">
-        <div class="tab"><span class="glyph">☀️</span>Today</div>
-        <div class="tab"><span class="glyph">📖</span>Journals</div>
-        <div class="tab on"><span class="glyph">📄</span>Pages</div>
-        <div class="tab"><span class="glyph">🔍</span>Search</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-calendar-event"/></svg></span>Today</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-notebook"/></svg></span>Journals</div>
+        <div class="tab on"><span class="glyph"><svg class="ic"><use href="#i-file-text"/></svg></span>Pages</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-search"/></svg></span>Search</div>
       </div>
       <div class="homebar"></div>
     </div>
-    <div class="note">별표 페이지가 위. 행의 숫자는 줄 수. ＋ = New page(데스크톱과 같은 경로). 저널은 여기 안 나온다(데스크톱 A3).</div>
+    <div class="note">별표 페이지가 위. 행의 숫자는 줄 수. <code>plus</code> = New page(데스크톱과 같은 경로). 저널은 여기 안 나온다(데스크톱 A3).</div>
   </div>
 
   <!-- ④ Page 상세 -->
@@ -326,10 +373,10 @@
           <div class="title">Mobile v1</div>
         </div>
         <div class="spacer"></div>
-        <div class="icon-btn">⋯</div>
+        <div class="icon-btn"><svg class="ic"><use href="#i-dots"/></svg></div>
       </div>
       <div class="body">
-        <div class="row"><span class="chk done">✓</span><span class="txt done" style="color:var(--text-3);text-decoration:line-through">Pick architecture: Tauri 2 iOS</span></div>
+        <div class="row"><span class="chk done"><svg class="ic thick"><use href="#i-check"/></svg></span><span class="txt done" style="color:var(--text-3);text-decoration:line-through">Pick architecture: Tauri 2 iOS</span></div>
         <div class="row"><span class="chk doing">–</span><span class="txt">Design mockups</span></div>
         <div class="row d1"><span class="bullet"></span><span class="txt">Tab bar replaces sidebar</span></div>
         <div class="row d1"><span class="bullet"></span><span class="txt">Accessory bar replaces shortcuts</span></div>
@@ -337,14 +384,14 @@
         <div class="row d1"><span class="chk"></span><span class="txt">iCloud download layer <span class="tag">#risk</span></span></div>
       </div>
       <div class="tabs">
-        <div class="tab"><span class="glyph">☀️</span>Today</div>
-        <div class="tab"><span class="glyph">📖</span>Journals</div>
-        <div class="tab on"><span class="glyph">📄</span>Pages</div>
-        <div class="tab"><span class="glyph">🔍</span>Search</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-calendar-event"/></svg></span>Today</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-notebook"/></svg></span>Journals</div>
+        <div class="tab on"><span class="glyph"><svg class="ic"><use href="#i-file-text"/></svg></span>Pages</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-search"/></svg></span>Search</div>
       </div>
       <div class="homebar"></div>
     </div>
-    <div class="note">불릿 길게 누르기 = zoom(그 줄이 새 루트). 위 breadcrumb으로 되돌아간다. 드래그 재배치는 v1 비대상 — 이동은 ⇤/⇥와 잘라 붙이기로 감당.</div>
+    <div class="note">불릿 길게 누르기 = zoom(그 줄이 새 루트). 위 breadcrumb으로 되돌아간다. 드래그 재배치는 v1 비대상 — 이동은 액세서리 바의 indent 버튼과 잘라 붙이기로 감당.</div>
   </div>
 
   <!-- ⑤ Search -->
@@ -355,7 +402,7 @@
       <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
       <div class="nav"><div class="title">Search</div></div>
       <div class="body">
-        <div class="searchbox">🔍 <span>sync</span><span class="caret"></span></div>
+        <div class="searchbox"><svg class="ic"><use href="#i-search"/></svg> <span>sync</span><span class="caret"></span></div>
         <div class="chips">
           <span class="chip on">All</span>
           <span class="chip">To-dos</span>
@@ -369,10 +416,10 @@
         <div class="hit"><em>Sync</em> status badge on mobile</div>
       </div>
       <div class="tabs">
-        <div class="tab"><span class="glyph">☀️</span>Today</div>
-        <div class="tab"><span class="glyph">📖</span>Journals</div>
-        <div class="tab"><span class="glyph">📄</span>Pages</div>
-        <div class="tab on"><span class="glyph">🔍</span>Search</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-calendar-event"/></svg></span>Today</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-notebook"/></svg></span>Journals</div>
+        <div class="tab"><span class="glyph"><svg class="ic"><use href="#i-file-text"/></svg></span>Pages</div>
+        <div class="tab on"><span class="glyph"><svg class="ic"><use href="#i-search"/></svg></span>Search</div>
       </div>
       <div class="homebar"></div>
     </div>
@@ -386,7 +433,7 @@
       <div class="island"></div>
       <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
       <div class="setup">
-        <div class="cloud">☁️</div>
+        <div class="cloud"><svg class="ic"><use href="#i-cloud"/></svg></div>
         <h2>Your vault lives in iCloud</h2>
         <p>Yonalist keeps your notes as Markdown files in its iCloud Drive folder.
         Your Mac points at the same folder — edits merge automatically.</p>
