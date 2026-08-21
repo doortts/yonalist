@@ -15,6 +15,7 @@ pub mod file_io;
 pub mod hlc;
 pub mod intake;
 pub mod layout;
+pub mod machine;
 pub mod merger;
 pub mod parse;
 pub mod render;

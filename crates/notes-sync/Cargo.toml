@@ -37,5 +37,12 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSURL",
 ] }
 
+# iOS has no `gethostuuid`, so the device seed comes from a value this app
+# stores in the keychain instead. Keychain Services is plain C on both Apple
+# platforms, which is why no Swift plugin is needed. `core-foundation` is
+# already in the lock, so this adds two crates and touches no other target.
+[target.'cfg(target_os = "ios")'.dependencies]
+security-framework = "3.7.0"
+
 [dev-dependencies]
 proptest = "1.9.0"

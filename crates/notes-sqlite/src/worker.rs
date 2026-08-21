@@ -216,7 +216,41 @@ fn device_scope(location: &DatabaseLocation) -> String {
         .and_then(|parent| std::fs::canonicalize(parent).ok())
         .map(|parent| parent.join(path.file_name().unwrap_or_default()))
         .unwrap_or_else(|| path.clone());
-    resolved.to_string_lossy().nfc().collect()
+    within_the_app(&resolved, install_root().as_deref())
+        .to_string_lossy()
+        .nfc()
+        .collect()
+}
+
+/// The part of the path that says which writer this is, given where the app's
+/// own directory starts.
+///
+/// iOS renames the container on every install, so the absolute path names the
+/// install rather than the writer: the same database, reinstalled, would read
+/// as somebody else and take a new device id — which is the one thing the id
+/// must never do while a vault of its stamps is still in iCloud. What is
+/// stable is where the file sits *inside* the app, so that is what counts.
+///
+/// A path outside the given root, or no root at all, keeps the whole path.
+/// Every desktop passes `None` here and is unchanged.
+fn within_the_app(resolved: &Path, root: Option<&Path>) -> PathBuf {
+    root.and_then(|root| resolved.strip_prefix(root).ok())
+        .map_or_else(|| resolved.to_path_buf(), Path::to_path_buf)
+}
+
+/// Where this app's own directory starts, on the platform that moves it.
+#[cfg(target_os = "ios")]
+fn install_root() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    // Canonicalised because the resolved database path is, and iOS reaches the
+    // container through a symlinked `/var`.
+    std::fs::canonicalize(&home).ok().or(Some(home))
+}
+
+/// Everywhere else the path is already the writer's own and stays whole.
+#[cfg(not(target_os = "ios"))]
+fn install_root() -> Option<PathBuf> {
+    None
 }
 
 /// What to write, given what the machine would say. Separated from the query so
@@ -1102,6 +1136,53 @@ mod tests {
         assert_eq!(
             provisioned_device_id(Some("cad27a0b".to_owned())).expect("a seed is an id"),
             "cad27a0b"
+        );
+    }
+
+    /// The container prefix is what iOS rewrites on every install, so it must
+    /// not reach the scope. What is left still tells two databases apart.
+    #[test]
+    fn a_path_inside_the_app_is_named_by_its_place_within_it() {
+        let root = PathBuf::from("/Containers/Data/Application/FIRST-INSTALL");
+        let database = root.join("Library/Application Support/yonalist/notes-v2.sqlite");
+
+        assert_eq!(
+            within_the_app(&database, Some(&root)),
+            PathBuf::from("Library/Application Support/yonalist/notes-v2.sqlite")
+        );
+    }
+
+    /// The same database under a renamed container is the same writer, which
+    /// is the whole point: a reinstall keeps the device id it already had.
+    #[test]
+    fn the_same_place_under_a_renamed_container_reads_the_same() {
+        let first = PathBuf::from("/Containers/Data/Application/FIRST-INSTALL");
+        let second = PathBuf::from("/Containers/Data/Application/SECOND-INSTALL");
+        let tail = "Library/Application Support/yonalist/notes-v2.sqlite";
+
+        assert_eq!(
+            within_the_app(&first.join(tail), Some(&first)),
+            within_the_app(&second.join(tail), Some(&second))
+        );
+    }
+
+    /// No root is the desktop case, where the absolute path is already the
+    /// answer and shortening it would merge two vaults into one writer.
+    #[test]
+    fn without_a_root_the_whole_path_is_kept() {
+        let database = PathBuf::from("/Users/someone/Vaults/work/notes-v2.sqlite");
+
+        assert_eq!(within_the_app(&database, None), database);
+    }
+
+    /// A path that is not under the root is not the root's to shorten.
+    #[test]
+    fn a_path_outside_the_root_is_left_whole() {
+        let database = PathBuf::from("/elsewhere/notes-v2.sqlite");
+
+        assert_eq!(
+            within_the_app(&database, Some(Path::new("/Containers/Data/Application/X"))),
+            database
         );
     }
 }

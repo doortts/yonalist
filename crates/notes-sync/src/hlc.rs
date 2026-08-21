@@ -143,7 +143,7 @@ pub fn is_device_id(value: &str) -> bool {
 /// travels further than this function. These characters go into every file in the
 /// vault, and a vault is something people put in a shared folder.
 pub fn device_seed(scope: &str) -> Option<String> {
-    machine_seed().map(|bytes| {
+    crate::machine::machine_seed().map(|bytes| {
         use sha2::Digest;
         let mut digest = sha2::Sha256::new();
         digest.update(bytes);
@@ -158,27 +158,6 @@ pub fn device_seed(scope: &str) -> Option<String> {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     })
-}
-
-/// What this machine calls itself, in bytes. `gethostuuid` reads the same value
-/// as `IOPlatformUUID` from the same kernel data, without the subprocess and the
-/// IOKit start-up that reading the registry costs.
-#[cfg(target_os = "macos")]
-fn machine_seed() -> Option<[u8; 16]> {
-    let mut id = [0_u8; 16];
-    let timeout = libc::timespec {
-        tv_sec: 5,
-        tv_nsec: 0,
-    };
-    // SAFETY: the call fills exactly sixteen bytes — `uuid_t` — and both
-    // pointers name locals that outlive it.
-    let outcome = unsafe { libc::gethostuuid(id.as_mut_ptr(), &timeout) };
-    (outcome == 0).then_some(id)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn machine_seed() -> Option<[u8; 16]> {
-    None
 }
 
 fn is_lowercase_hex(byte: u8) -> bool {
