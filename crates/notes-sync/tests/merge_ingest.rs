@@ -1844,6 +1844,80 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
     );
 }
 
+/// A child document that states the node it hangs from, the way a page the
+/// rescue parked under the recovery page is written back out.
+fn child_of(parent: &str, hlc: &str) -> PageDocument {
+    let mut document = page(Vec::new(), hlc);
+    document.id = DocumentId::Node(CHILD_ID.to_owned());
+    document.parent = Some(parent.to_owned());
+    document.sort_key = Some(4_294_967_296);
+    document.root.title = "Archive".to_owned();
+    document
+}
+
+/// The recovery page is made on the way to holding a place open, so a document
+/// that names *it* as its parent finds the row already there and the stand-in
+/// insert does nothing. Running the follow-ups anyway takes the mark the
+/// recovery page was just given, and nothing gives it another — so the page
+/// exists here and its file is never written.
+#[test]
+fn naming_the_recovery_page_as_a_parent_does_not_take_back_its_write() {
+    let seeded = stamp(5, "a3f2a3f2");
+    // The id is derived from the vault's own uuid, which the fixture fixes, so
+    // what one throwaway vault answers holds for the next one.
+    let recovery = {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        merge_document(
+            &transaction,
+            &clock(),
+            &notes_sync::document::VaultFile::Page(child_of("Absent000001", &seeded)),
+            &child_input(),
+            None,
+        )
+        .expect("a parent nobody has seen makes one");
+        recovery_page(&transaction).expect("a recovery page was made")
+    };
+
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(child_of(&recovery, &seeded)),
+        &child_input(),
+        None,
+    )
+    .expect("merge the child");
+
+    let waiting: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [&recovery],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        waiting, 1,
+        "the recovery page this merge made still owes the file that states it"
+    );
+    assert_eq!(
+        text_of(&transaction, &recovery).as_deref(),
+        Some("복구됨"),
+        "it is the recovery page, not a stand-in"
+    );
+    assert_ne!(
+        hlc_of(&transaction, &recovery),
+        "",
+        "and it keeps the reading it was made with"
+    );
+    assert_eq!(
+        parent_of(&transaction, CHILD_ID),
+        recovery,
+        "the child hangs where its file says"
+    );
+}
+
 /// A copy some sync client wrote holds the same document id, so recording it
 /// would move that document's file to the copy's name. Every later write would
 /// go into the copy while the real file went stale — and the other device,
