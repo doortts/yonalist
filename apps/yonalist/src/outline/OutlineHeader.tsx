@@ -89,7 +89,8 @@ export function OutlineHeader({
   onZoomTo,
   onClose,
   selectionToolbar,
-  exportMenu
+  exportMenu,
+  bare = false
 }: {
   readonly store: NotesStore;
   readonly target: { readonly id: string; readonly text: string };
@@ -104,6 +105,12 @@ export function OutlineHeader({
   readonly onHome: () => void;
   readonly onZoomTo: (nodeId: string) => void;
   readonly onClose?: () => void;
+  /**
+   * The shell around this outline already carries the page's name and the way
+   * back out of it, so the toolbar would be a second copy of both. The
+   * selection pill and the error still belong to the rows and stay.
+   */
+  readonly bare?: boolean;
   readonly selectionToolbar?: ReactNode;
   readonly exportMenu?: ReactNode;
 }) {
@@ -114,7 +121,7 @@ export function OutlineHeader({
   const atRoot = pageId === ROOT_ID;
   return (
     <>
-      <div
+      {!bare && <div
         className="notes-outline-toolbar"
         data-tauri-drag-region="deep"
       >
@@ -180,7 +187,7 @@ export function OutlineHeader({
             <X size={16} aria-hidden="true" />
           </button>
         )}
-      </div>
+      </div>}
       {/* A zero-height sticky box: the pill has to stay under the toolbar as
           the rows scroll past, and it must not push them down when it appears.
           The box is also what the pill measures the pane's width by. */}

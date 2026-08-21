@@ -31,6 +31,7 @@ export function MobileOutline({
   return (
     <div className="mobile-outline">
       <NotesOutline
+        bare
         store={store}
         status={shell.status}
         error={shell.error}

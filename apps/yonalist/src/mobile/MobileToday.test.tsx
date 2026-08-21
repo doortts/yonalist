@@ -51,3 +51,20 @@ function shiftedBack(date: string): string {
   const shifted = new Date(Date.UTC(year, month - 1, day - 1));
   return shifted.toISOString().slice(0, 10);
 }
+
+describe("MobileToday chrome", () => {
+  it("draws no breadcrumb, because the day header is the navigation", async () => {
+    mounted();
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument());
+
+    expect(screen.queryByRole("navigation", { name: /breadcrumb/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /all pages/i })).not.toBeInTheDocument();
+  });
+
+  it("names the day once, not twice", async () => {
+    mounted();
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument());
+
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+  });
+});

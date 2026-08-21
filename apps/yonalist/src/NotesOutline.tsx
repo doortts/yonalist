@@ -55,7 +55,7 @@ export interface PaneRestoreRequest {
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
   onHome, onOpenSplit, onTagClick, onDateClick, onClose, paneId, restoreRequest,
-  onSelectionCountChange
+  onSelectionCountChange, bare = false
 }: {
   readonly store: NotesStore;
   readonly status: NotesShellSnapshot["status"];
@@ -73,6 +73,12 @@ export function NotesOutline({
   readonly onClose?: () => void;
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;
+  /**
+   * For a shell that already names the page and carries the way out of it — a
+   * phone, where the day is the screen's own heading. The rows, the selection
+   * pill and the errors are unchanged; only the outline's own chrome goes.
+   */
+  readonly bare?: boolean;
   readonly onSelectionCountChange?: (
     paneId: "primary" | "secondary",
     count: number
@@ -494,6 +500,7 @@ export function NotesOutline({
       {...imageIngest.sectionProps}
     >
       <OutlineHeader
+        bare={bare}
         store={store}
         target={header}
         index={index}
@@ -559,7 +566,7 @@ export function NotesOutline({
         <div className="notes-outline-content" data-zoomed-page="true">
           {/* Home is the root itself, and the root is nobody's title: it gets
               a heading only once a zoom gives it one. */}
-          {(zoomRoot || page.id !== ROOT_ID) && (
+          {!bare && (zoomRoot || page.id !== ROOT_ID) && (
             <OutlinePageHeading
               key={header.id}
               store={store}
