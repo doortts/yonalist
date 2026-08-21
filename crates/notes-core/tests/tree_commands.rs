@@ -1600,3 +1600,55 @@ fn creating_the_journals_node_a_second_time_changes_nothing() {
         "where the node sits is the user's, and this creation did not ask to move it"
     );
 }
+
+/// The trash is where the reported database was: the node deleted, the day
+/// under it deleted with it, and every later day write refused because the
+/// planning slice carries trashed rows too. The creation takes the row back --
+/// live, where the command says, titled what the command says -- and leaves
+/// the days that were thrown away where they were thrown.
+#[test]
+fn creating_the_journals_node_takes_it_back_out_of_the_trash() {
+    let mut tree = root_tree();
+    let journals = id(notes_core::JOURNALS_ID);
+    tree.apply(&[TreeMutation::upsert(NoteNode::child(
+        journals.clone(),
+        id("root"),
+        1_024,
+        "Journals",
+    ))])
+    .unwrap();
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("day"),
+            parent_id: journals.clone(),
+            position: Position::at_end(),
+            text: "2026-08-20".into(),
+        },
+    );
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::DeleteSubtree {
+            id: journals.clone(),
+        },
+    );
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: journals.clone(),
+            parent_id: id("root"),
+            position: Position::at_end(),
+            text: "Journals".into(),
+        },
+    );
+
+    let node = tree.node(&journals).unwrap();
+    assert!(!node.is_deleted(), "the node the day needs is live again");
+    assert_eq!(node.parent_id(), Some(&id("root")));
+    assert_eq!(node.text(), "Journals");
+    assert!(
+        tree.node(&id("day")).unwrap().is_deleted(),
+        "a day in the trash was put there on purpose and is not part of this"
+    );
+}
