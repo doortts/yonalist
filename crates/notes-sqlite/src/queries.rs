@@ -54,6 +54,11 @@ fn anchor_sql() -> String {
 /// that window carries the whole forest depth first and stops at a row limit,
 /// so a page with enough children of its own would push the pages after it out
 /// of the answer.
+///
+/// The window answers the same question of a receipt rather than of SQLite, so
+/// the same rule is written twice: `storeSupport.ts::isPageParent`. A new page
+/// rule lands here first -- go and widen that one too, or the list the window
+/// keeps and the list a restart reads stop agreeing.
 pub(crate) fn pages(connection: &Connection) -> Result<Vec<PageSummary>, StorageError> {
     let mut statement = connection
         .prepare(

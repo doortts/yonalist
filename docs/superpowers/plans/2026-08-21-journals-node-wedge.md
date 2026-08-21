@@ -257,8 +257,13 @@ and the first journal write after this fix revives it under root (A2).
 3. **The `departed` rule** (storeState.ts:72-95) treats "new parent is in the
    page list" as "left this page". With days in the page list, a receipt that
    moves rows between two days while Home is open hides those rows from Home's
-   outline until reload. Pre-existing on main (days are in `state.pages` from
-   bootstrap), unchanged by this work, and worth its own investigation.
+   outline until reload. The rule is pre-existing on main -- days are in
+   `state.pages` from bootstrap -- but item 5 widens who it reaches: a day
+   created *this session* now enters the list from its own receipt, so a
+   receipt moving rows into that day while Home is open is newly exposed. The
+   ordinary carry-over is safe, because the day is the active page while
+   `carryRowsInto` runs. Worth its own investigation; excluding days would
+   break A5, so the rule itself is what needs the look.
 4. **`place_missing_parent`'s unguarded tail** (merger.rs:763-770) can blank a
    pre-existing empty-text node's stamp. Separate defect, flagged as its own
    task, not touched here.
