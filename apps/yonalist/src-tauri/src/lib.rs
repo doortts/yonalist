@@ -931,6 +931,51 @@ async fn run_blocking<T: Send + 'static>(
         })?
 }
 
+/// Gives a platform that cannot ask for a folder one to sync into.
+///
+/// iOS has no folder picker worth the name — nothing it offers grants the
+/// standing access a background sync needs — so the vault is this app's own
+/// iCloud container, adopted on the first run and never touched again. Every
+/// desktop passes through: the folder there is the user's to name, and
+/// choosing one for them would start writing notes somewhere they never
+/// picked.
+///
+/// A failure here is left quiet on purpose. The vault stays unset, which is
+/// the state the app already knows how to be in and already has a screen for,
+/// and the alternative — refusing to start — would be worse than starting
+/// without sync.
+fn adopt_platform_vault(data_directory: &Path) {
+    let stored = sync_settings::read_vault_path(data_directory);
+    let Some(place) = notes_sync::icloud::first_run_vault(stored, platform_vault) else {
+        return;
+    };
+    let path = place.path();
+    if std::fs::create_dir_all(path).is_err() {
+        return;
+    }
+    let _ = sync_settings::set_vault_path(data_directory, path);
+}
+
+/// Where this platform would put a vault if it had to choose. Only iOS does.
+#[cfg(target_os = "ios")]
+fn platform_vault() -> Option<notes_sync::icloud::VaultPlace> {
+    Some(notes_sync::icloud::vault_root(
+        notes_sync::icloud::container,
+        || {
+            // iCloud is off or signed out. The app still has to be writable,
+            // and `Local` is what tells the screen to say so.
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join("Documents"))
+                .unwrap_or_else(std::env::temp_dir)
+        },
+    ))
+}
+
+#[cfg(not(target_os = "ios"))]
+fn platform_vault() -> Option<notes_sync::icloud::VaultPlace> {
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -957,6 +1002,7 @@ pub fn run() {
                 .join("NanumGothic-Regular.ttf");
             let runtime = Arc::new(StartupGate::pending());
             let watching = app.handle().clone();
+            let startup_data_directory = data_directory.clone();
             app.manage(DesktopState {
                 runtime: Arc::clone(&runtime),
                 data_directory: data_directory.clone(),
@@ -970,6 +1016,11 @@ pub fn run() {
                         font_path,
                         watching.clone(),
                     ));
+                    // Before the watcher, because on a phone this is what
+                    // gives it something to watch: iOS has no folder picker,
+                    // so a first run adopts the app's own iCloud container
+                    // rather than waiting for an answer nobody can give.
+                    adopt_platform_vault(&startup_data_directory);
                     // After the gate opens, so a command arriving mid-startup
                     // waits for the same runtime this is about to hand a
                     // watcher rather than a second one.

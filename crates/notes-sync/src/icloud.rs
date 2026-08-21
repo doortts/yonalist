@@ -54,6 +54,23 @@ pub fn vault_root(
     }
 }
 
+/// The vault this launch should adopt, or `None` to leave it alone.
+///
+/// A folder already chosen is never replaced: on the desktop it is the user's
+/// answer, and on a phone it is the answer a previous launch gave. Only a
+/// first run asks the platform, and only a platform with something to offer
+/// answers — every desktop returns `None` here, because picking a folder
+/// nobody named would start syncing notes into a place they never chose.
+pub fn first_run_vault(
+    stored: Option<PathBuf>,
+    offer: impl FnOnce() -> Option<VaultPlace>,
+) -> Option<VaultPlace> {
+    if stored.is_some() {
+        return None;
+    }
+    offer()
+}
+
 /// This app's ubiquity container, or `None` when iCloud has nothing to give —
 /// switched off, signed out, or the entitlement absent.
 ///

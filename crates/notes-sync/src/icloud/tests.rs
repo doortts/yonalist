@@ -50,3 +50,44 @@ fn asking_costs_nothing_when_the_answer_is_already_known() {
 
     assert_eq!(asked, 1);
 }
+
+use super::{VaultPlace as Place, first_run_vault};
+
+const STORED: &str = "/somewhere/a-vault-the-user-picked";
+
+#[test]
+fn a_vault_already_chosen_is_never_replaced() {
+    let chosen = first_run_vault(Some(PathBuf::from(STORED)), || {
+        panic!("the platform must not be asked once there is an answer")
+    });
+
+    assert_eq!(chosen, None);
+}
+
+#[test]
+fn a_first_run_takes_what_the_platform_offers() {
+    let chosen = first_run_vault(None, || {
+        Some(Place::Shared(PathBuf::from("/container/Documents")))
+    });
+
+    assert_eq!(
+        chosen,
+        Some(Place::Shared(PathBuf::from("/container/Documents")))
+    );
+}
+
+#[test]
+fn a_platform_with_nothing_to_offer_leaves_the_vault_unset() {
+    // Every desktop: the folder is the user's to pick, and picking one for
+    // them would start syncing notes into a place they never named.
+    assert_eq!(first_run_vault(None, || None), None);
+}
+
+#[test]
+fn the_local_fallback_is_offered_too_rather_than_refused() {
+    // A phone with iCloud off still has to be writable, and the screen says
+    // which it got.
+    let chosen = first_run_vault(None, || Some(Place::Local(PathBuf::from("/app/Documents"))));
+
+    assert!(matches!(chosen, Some(Place::Local(_))));
+}
