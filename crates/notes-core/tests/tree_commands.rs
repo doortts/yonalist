@@ -1560,3 +1560,43 @@ fn a_row_deeper_than_the_cap_is_rejected() {
         notes_core::MAX_TREE_DEPTH
     );
 }
+
+/// The Journals node's id is a constant every device shares, so the same
+/// creation is sent by whichever device writes the first day it has. Sent
+/// against a node that is already here, it has to be satisfied by that node
+/// rather than refused: the day right behind it names this id as its parent,
+/// and a refusal here means no journal can ever be written again.
+#[test]
+fn creating_the_journals_node_a_second_time_changes_nothing() {
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
+    let journals = id(notes_core::JOURNALS_ID);
+    // Dragged off Home and into a page, which is an ordinary move for an
+    // ordinary bullet -- and takes it out of the page list the window reads.
+    tree.apply(&[TreeMutation::upsert(NoteNode::child(
+        journals.clone(),
+        id("page"),
+        1_024,
+        "Journals",
+    ))])
+    .unwrap();
+
+    let patch = tree
+        .plan(NotesCommand::CreateNode {
+            id: journals.clone(),
+            parent_id: id("root"),
+            position: Position::at_end(),
+            text: "Journals".into(),
+        })
+        .expect("the node that is already here answers the creation");
+
+    assert!(
+        patch.forward.is_empty() && patch.inverse.is_empty(),
+        "nothing was written, so there is nothing to undo: {patch:?}"
+    );
+    assert_eq!(
+        tree.node(&journals).unwrap().parent_id(),
+        Some(&id("page")),
+        "where the node sits is the user's, and this creation did not ask to move it"
+    );
+}

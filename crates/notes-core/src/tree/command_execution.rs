@@ -182,6 +182,18 @@ impl NotesTree {
         position: Position,
         text: String,
     ) -> Result<(), DomainError> {
+        // The one id every device already agrees on (`crate::JOURNALS_ID`), so
+        // the same creation arrives from whoever writes their first journal
+        // day. The node it asks for is here, which is all the day behind it
+        // needs -- and where the node sits is the user's, so a bullet dragged
+        // off Home stays where they put it. Refusing instead wedges journaling
+        // for good: the day names this id as its parent, and no day can be
+        // written while the id cannot be asked for.
+        if id.as_str() == crate::JOURNALS_ID
+            && self.nodes.get(&id).is_some_and(|node| !node.is_deleted())
+        {
+            return Ok(());
+        }
         self.ensure_new_id(&id)?;
         self.ensure_parent(&parent_id)?;
         self.nodes.insert(
