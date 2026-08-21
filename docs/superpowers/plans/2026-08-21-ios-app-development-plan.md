@@ -134,7 +134,7 @@ vault에서는 못 쓴다. 다행히 `vault_watch.rs:30`에 이미 60초마다 �
 | # | 항목 | 바뀌는 곳 | 실패 증거 | 완료 조건 |
 |---|---|---|---|---|
 | 0.1 | iOS 타깃 추가 + 코어 크레이트 크로스 컴파일 — **통과 (아래 증거)** | 없음(도구) | `cargo build -p notes-sqlite --target aarch64-apple-ios-sim`이 `can't find crate for core`로 실패 | `rusqlite` bundled와 5개 코어 크레이트가 iOS 시뮬레이터 타깃으로 빌드된다 |
-| 0.1b | `tauriV2.mjs`의 rustup 경로 탐지를 고친다 | `scripts/tauriV2.mjs` | 이 기계에서 `npm run tauri`가 Homebrew rust를 쓴다는 테스트 실패 | rustup이 어디에 깔려 있든 고정 툴체인을 쓴다 |
+| 0.1b | `tauriV2.mjs`의 rustup 경로 탐지를 고친다 — **통과** | `scripts/rustupToolchain.mjs`(신규), `scripts/tauriV2.mjs` | 넘겨짚는 옛 로직이 rustup이 알려준 경로를 무시하고 `null`을 낸다 | rustup이 어디에 깔려 있든 고정 툴체인을 쓴다 |
 | 0.2 | `[lib] crate-type` + `mobile_entry_point` | `src-tauri/Cargo.toml`, `src/lib.rs`, `src/main.rs` | `cargo build --target aarch64-apple-ios-sim` 링크 실패 | staticlib이 나오고 데스크톱 빌드가 그대로 통과한다 |
 | 0.3 | 데스크톱 전용 코드 `cfg` 게이트 | `lib.rs`(창 생성·vault 선택·내보내기), `vault_watch.rs` | iOS 타깃 컴파일 오류 | iOS 타깃이 컴파일되고 `cargo test --workspace`가 데스크톱에서 그대로 통과한다 |
 | 0.4 | `tauri ios init` + iOS 설정·아이콘 | `gen/apple/`, `tauri.ios.conf.json`, 아이콘 세트 | `tauri ios build --debug` 실패 | 빈 화면이라도 시뮬레이터에서 앱이 뜬다 |
@@ -159,7 +159,24 @@ PATH 보정 없이 Homebrew rust로 떨어진다. 데스크톱은 호스트 타�
 지금까지 티가 안 났지만, `tauri ios build`는 그 자리에서 죽는다. 0.1b가 이걸
 `rustup which cargo`로 푸는 항목이다.
 
-당장 빌드할 때는 툴체인 바이너리를 절대 경로로 부르면 된다:
+#### 0.1b 결과 (2026-08-21)
+
+**고쳤다.** `scripts/rustupToolchain.mjs`가 `rustup which cargo`로 물어서 고정
+툴체인의 bin 디렉터리를 받아 오고, `tauriV2.mjs`가 그것을 PATH 맨 앞에 둔다.
+넘겨짚던 `~/.cargo/bin`은 rustup이 대답하지 못할 때의 뒷받침으로만 남았다.
+자식 프로세스가 보는 것이 뒤집혔다:
+
+| | `cargo` |
+|---|---|
+| 고치기 전 | `/opt/homebrew/bin/cargo` — Homebrew rust, 호스트 타깃뿐 |
+| 고친 뒤 | `~/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo` — iOS 타깃 둘 다 있음 |
+
+`rustc`도 같은 디렉터리에서 온다. 셰임 디렉터리 대신 툴체인 bin을 넘기는 이유가
+이것이다 — 셰임은 앞에 다른 `rustc`가 있으면 다시 가려진다.
+
+이 기계에서 직접 `cargo`를 칠 때는 여전히 Homebrew rust가 잡힌다. 저장소
+명령(`npm run tauri …`)은 이제 안전하지만, 손으로 크로스 컴파일할 때는 툴체인을
+절대 경로로 부르거나 Homebrew `rust` 포뮬러를 지워야 한다:
 
 ```bash
 ~/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin/cargo build -p notes-sqlite --target aarch64-apple-ios-sim
