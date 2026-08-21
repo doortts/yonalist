@@ -1453,6 +1453,55 @@ fn a_trash_root_whose_parent_is_unknown_gets_a_placeholder() {
     assert_eq!(deleted_flag(&transaction, unknown_parent), 1);
 }
 
+/// A placeholder is a name this merge stood up, not a version anybody wrote. So
+/// the document it was waiting for takes it back without overwriting anything —
+/// and a vault whose trash names a dozen pages must not read as a dozen defeats
+/// the first time a new database sweeps it. Which is what a boot scan does every
+/// time: `.yonalist/trash.md` sorts ahead of every page.
+#[test]
+fn a_document_landing_on_its_own_placeholder_records_nothing() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let unknown_parent = "Mnutes000001";
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2a3f2"), "Taken out of the page");
+    gone.from = Some((unknown_parent.to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(5, "a3f2a3f2")),
+        &trash_input(),
+        None,
+    )
+    .expect("trash");
+    assert_eq!(
+        deleted_flag(&transaction, unknown_parent),
+        1,
+        "a placeholder"
+    );
+
+    let mut elsewhere = input();
+    elsewhere.file_path = "Second-Mnutes000001/README.md".to_owned();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(second_page()),
+        &elsewhere,
+        None,
+    )
+    .expect("page");
+
+    assert_eq!(
+        text_of(&transaction, unknown_parent).as_deref(),
+        Some("Second")
+    );
+    assert_eq!(deleted_flag(&transaction, unknown_parent), 0);
+    assert_eq!(
+        conflicts(&transaction),
+        0,
+        "the page took its own placeholder back, and nothing was overwritten"
+    );
+}
+
 /// Merging the same trash file twice is not two deletions.
 #[test]
 fn merging_the_same_trash_twice_changes_nothing() {

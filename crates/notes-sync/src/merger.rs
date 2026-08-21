@@ -1100,7 +1100,16 @@ fn decide(
     if file_hlc > row.hlc.as_str() {
         // A deletion is one of a node's states, so a merge that reverses one —
         // in either direction — has beaten something worth keeping.
-        let reason = if row.deleted != deleted_now {
+        let reason = if row.hlc.is_empty() {
+            // Except that a row with no reading is not a version anybody wrote:
+            // it is the placeholder this merge stood up itself, to hold a name
+            // the trash used before the document holding it had been read. It is
+            // deleted and empty by construction, so both tests below would call
+            // it a deletion that lost — once per page the trash names, every
+            // time a fresh database sweeps a vault, all of it reported to the
+            // user as notes another device overwrote.
+            None
+        } else if row.deleted != deleted_now {
             Some(Reason::Lww)
         } else if row.dirty && !same_content {
             Some(Reason::DirtyOverwrite)
