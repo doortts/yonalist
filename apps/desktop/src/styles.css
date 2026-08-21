@@ -1154,6 +1154,7 @@ body.is-resizing-pane {
   color: var(--accent);
 }
 
+.yonalist-navigation-footer [data-tooltip]::after,
 .app-statusbar [data-tooltip]::after {
   top: auto;
   bottom: calc(100% + 6px);

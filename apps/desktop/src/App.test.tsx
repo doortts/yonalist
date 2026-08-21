@@ -93,6 +93,20 @@ describe("Yonalist v2 desktop shell", () => {
     expect(document.querySelector(".notes-search-results")).toBeNull();
   });
 
+  it("provides tooltips only for icon-only navigation actions, not labeled buttons", async () => {
+    render(<App api={api()} />);
+    await screen.findByRole("heading", { name: "Yonalist" });
+
+    const searchButton = screen.getByRole("button", { name: "Search" });
+    expect(searchButton).toHaveAttribute("data-tooltip", "Search");
+
+    const newPageButton = screen.getByRole("button", { name: "New page" });
+    expect(newPageButton).not.toHaveAttribute("data-tooltip");
+
+    const settingsButton = screen.getByRole("button", { name: "Settings" });
+    expect(settingsButton).not.toHaveAttribute("data-tooltip");
+  });
+
   it("closes an empty search field as soon as it loses focus", async () => {
     render(<App api={api()} />);
     await screen.findByRole("heading", { name: "Yonalist" });
