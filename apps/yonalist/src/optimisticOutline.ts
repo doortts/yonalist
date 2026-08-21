@@ -46,10 +46,16 @@ function bullet(
  *
  * A journal day opens with its title already decided, which is what `title` is
  * for: the date has to be on the page the first keystroke creates, or the page
- * it creates is not that day's journal.
+ * it creates is not that day's journal. It hangs from the Journals node rather
+ * than from home, which is what `parentId` is for -- and the node this carries
+ * is where the creation reads the parent back from.
  */
-export function provisionalPage(id: string, title = ""): NoteView {
-  return bullet(id, ROOT_ID, SORT_KEY_STEP, title);
+export function provisionalPage(
+  id: string,
+  title = "",
+  parentId: string = ROOT_ID
+): NoteView {
+  return bullet(id, parentId, SORT_KEY_STEP, title);
 }
 
 export function projectCreateNode(

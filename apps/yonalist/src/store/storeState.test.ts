@@ -3,7 +3,7 @@ import type { MutationReceipt } from "../../../../packages/contracts/generated/M
 import type { NotesState } from "../notesState";
 import { initialNotesState } from "../notesState";
 import { receiptState, viewportState } from "./storeState";
-import { ROOT_ID } from "./storeSupport";
+import { JOURNALS_ID, ROOT_ID } from "./storeSupport";
 
 function bullet(id: string, parentId: string): NoteView {
   return {
@@ -250,6 +250,31 @@ describe("the page list follows the root's live children", () => {
     expect(restored.patch.pages).toEqual([
       { id: "page-1", title: "Today", sortKey: 1_024 }
     ]);
+  });
+
+  it("adds a journal day, which is a page under the Journals node", () => {
+    const result = receiptState(
+      ready([{ id: "page-1", title: "Today", sortKey: 1_024 }]),
+      receipt([
+        { ...bullet("day", JOURNALS_ID), text: "2026-08-21", sortKey: 2_048 }
+      ])
+    );
+
+    // The storage layer answers the same, which is what `findJournalPage`, the
+    // calendar and the feed all read: `queries.rs::pages`.
+    expect(result.patch.pages).toEqual([
+      { id: "page-1", title: "Today", sortKey: 1_024 },
+      { id: "day", title: "2026-08-21", sortKey: 2_048 }
+    ]);
+  });
+
+  it("keeps a day in the list when a later receipt touches it", () => {
+    const result = receiptState(
+      ready([{ id: "day", title: "2026-08-21", sortKey: 2_048 }]),
+      receipt([{ ...bullet("day", JOURNALS_ID), text: "2026-08-21", starred: true }])
+    );
+
+    expect(result.patch.pages?.map((page) => page.id)).toEqual(["day"]);
   });
 
   it("keeps the root row out of both the outline and the page list", () => {

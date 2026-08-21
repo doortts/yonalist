@@ -368,14 +368,19 @@ impl<S: StoragePort> NotesService<S> {
         let patch = tree.plan(command)?;
         let commit = self.storage.commit(session.revision, &patch)?;
         session.revision = commit.revision;
-        let entry = NotesServiceHistoryEntry {
-            forward: patch.forward,
-            inverse: patch.inverse,
-            carried_pictures: patch.carried_pictures,
-            group: history_group.clone(),
-            cycled_children,
-        };
-        session.record_history(entry);
+        // A plan that came out empty wrote nothing, and nothing is not
+        // something to take back: an entry for it spends a ⌘Z press on no
+        // change and throws away the redo the user still had.
+        if !patch.forward.is_empty() || !patch.inverse.is_empty() {
+            let entry = NotesServiceHistoryEntry {
+                forward: patch.forward,
+                inverse: patch.inverse,
+                carried_pictures: patch.carried_pictures,
+                group: history_group.clone(),
+                cycled_children,
+            };
+            session.record_history(entry);
+        }
         let receipt = Self::receipt(session, commit);
         session.record_completed(request_id, receipt.clone());
         Ok(receipt)

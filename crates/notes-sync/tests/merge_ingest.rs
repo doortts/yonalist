@@ -1844,6 +1844,145 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
     );
 }
 
+/// A child document that states the node it hangs from, the way a page the
+/// rescue parked under the recovery page is written back out.
+fn child_of(parent: &str, hlc: &str) -> PageDocument {
+    let mut document = child_document(hlc, "Archive", false);
+    document.parent = Some(parent.to_owned());
+    document
+}
+
+/// The recovery page is made on the way to holding a place open, so a document
+/// that names *it* as its parent finds the row already there and the stand-in
+/// insert does nothing. Running the follow-ups anyway takes the mark the
+/// recovery page was just given, and nothing gives it another — so the page
+/// exists here and its file is never written.
+#[test]
+fn naming_the_recovery_page_as_a_parent_does_not_take_back_its_write() {
+    let seeded = stamp(5, "a3f2a3f2");
+    // The id is derived from the vault's own uuid, which the fixture fixes, so
+    // what one throwaway vault answers holds for the next one.
+    let recovery = {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        merge_document(
+            &transaction,
+            &clock(),
+            &notes_sync::document::VaultFile::Page(child_of("Absent000001", &seeded)),
+            &child_input(),
+            None,
+        )
+        .expect("a parent nobody has seen makes one");
+        recovery_page(&transaction).expect("a recovery page was made")
+    };
+
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(child_of(&recovery, &seeded)),
+        &child_input(),
+        None,
+    )
+    .expect("merge the child");
+
+    let waiting: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [&recovery],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        waiting, 1,
+        "the recovery page this merge made still owes the file that states it"
+    );
+    assert_eq!(
+        text_of(&transaction, &recovery).as_deref(),
+        Some("복구됨"),
+        "it is the recovery page, not a stand-in"
+    );
+    assert_ne!(
+        hlc_of(&transaction, &recovery),
+        "",
+        "and it keeps the reading it was made with"
+    );
+    assert_eq!(
+        parent_of(&transaction, CHILD_ID),
+        recovery,
+        "the child hangs where its file says"
+    );
+}
+
+/// The page-document twin of `the_trash_does_not_stand_in_for_a_parent_that_is_\
+/// already_here`. A document whose parent this device already holds must leave
+/// that node alone: the stand-in exists for a parent nobody has seen. Emptying
+/// a real note's reading would lose it every later comparison, and taking its
+/// mark would drop a write it is owed. Two things keep the stand-in off it —
+/// the existence check and the insert's row count — and this states the outcome
+/// they are both for, so a rewrite that drops one has something to answer to.
+#[test]
+fn a_child_document_does_not_stand_in_for_a_parent_that_is_already_here() {
+    let parent = "Nd0000000001";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2a3f2");
+    // A note with no words yet is an ordinary state — a row somebody just made
+    // and has not typed into. It is also the only shape the stand-in's update
+    // would touch.
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![node(parent, &seeded, "")], &seeded)),
+        &input(),
+        None,
+    )
+    .expect("seed");
+    let before = hlc_of(&transaction, parent);
+    transaction
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [parent],
+        )
+        .expect("owed");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(child_of(parent, &seeded)),
+        &child_input(),
+        None,
+    )
+    .expect("merge the child");
+
+    assert_eq!(
+        hlc_of(&transaction, parent),
+        before,
+        "a note that is already here keeps its reading, or it loses every \
+         comparison from now on"
+    );
+    let waiting: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [parent],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        waiting, 1,
+        "and it still owes the write it owed before the child arrived"
+    );
+    assert_eq!(
+        recovery_page(&transaction),
+        None,
+        "and nothing was rescued, so there is no page to rescue it onto"
+    );
+}
+
 /// A copy some sync client wrote holds the same document id, so recording it
 /// would move that document's file to the copy's name. Every later write would
 /// go into the copy while the real file went stale — and the other device,

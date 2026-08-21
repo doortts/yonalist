@@ -3,7 +3,9 @@ import type { NoteView } from "../../../../packages/contracts/generated/NoteView
 import type { ViewportPage } from "../../../../packages/contracts/generated/ViewportPage";
 import type { NotesState } from "../notesState";
 import { mergeViewport, orderOutline } from "../outline/outlineModel";
-import { confirmedNote, confirmedText, ROOT_ID } from "./storeSupport";
+import {
+  confirmedNote, confirmedText, isPageParent, ROOT_ID
+} from "./storeSupport";
 
 export function omitKeys<T>(
   record: Readonly<Record<string, T>>,
@@ -118,11 +120,13 @@ export function receiptState(
     pending = remaining;
   }
 
-  // A page is nothing but a live child of the root: a bullet outdented onto
-  // Home joins the list, one indented under another row leaves it.
+  // A bullet outdented onto Home joins the list, one indented under another
+  // row leaves it -- and a day written under the Journals node joins it too,
+  // which is how the next Today press finds the day rather than making a
+  // second one.
   const pagesById = new Map(state.pages.map((page) => [page.id, page]));
   for (const node of receipt.changedNodes) {
-    if (node.parentId === ROOT_ID && !node.deleted) {
+    if (isPageParent(node.parentId) && !node.deleted) {
       pagesById.set(node.id, {
         id: node.id,
         title: node.text,

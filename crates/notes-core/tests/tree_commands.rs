@@ -1560,3 +1560,109 @@ fn a_row_deeper_than_the_cap_is_rejected() {
         notes_core::MAX_TREE_DEPTH
     );
 }
+
+/// The Journals node's id is a constant every device shares, so the same
+/// creation is sent by whichever device writes the first day it has. Sent
+/// against a node that is already here, it has to be satisfied by that node
+/// rather than refused: the day right behind it names this id as its parent,
+/// and a refusal here means no journal can ever be written again.
+#[test]
+fn creating_the_journals_node_a_second_time_changes_nothing() {
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
+    let journals = id(notes_core::JOURNALS_ID);
+    // Dragged off Home and into a page, which is an ordinary move for an
+    // ordinary bullet -- and takes it out of the page list the window reads.
+    tree.apply(&[TreeMutation::upsert(NoteNode::child(
+        journals.clone(),
+        id("page"),
+        1_024,
+        "Journals",
+    ))])
+    .unwrap();
+
+    let patch = tree
+        .plan(NotesCommand::CreateNode {
+            id: journals.clone(),
+            parent_id: id("root"),
+            position: Position::at_end(),
+            text: "Journals".into(),
+        })
+        .expect("the node that is already here answers the creation");
+
+    assert!(
+        patch.forward.is_empty() && patch.inverse.is_empty(),
+        "nothing was written, so there is nothing to undo: {patch:?}"
+    );
+    tree.apply(&patch.forward).unwrap();
+    assert_eq!(
+        tree.node(&journals).unwrap().parent_id(),
+        Some(&id("page")),
+        "where the node sits is the user's, and this creation did not ask to move it"
+    );
+}
+
+/// The trash is where the reported database was: the node deleted, the day
+/// under it deleted with it, and every later day write refused because the
+/// planning slice carries trashed rows too. The creation takes the row back --
+/// live, where the command says, titled what the command says, whatever the
+/// row it takes over used to say -- and leaves the days that were thrown away
+/// where they were thrown.
+#[test]
+fn creating_the_journals_node_takes_it_back_out_of_the_trash() {
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
+    let journals = id(notes_core::JOURNALS_ID);
+    // Renamed and dragged into a page before being thrown away, so that none of
+    // what the creation states is what the trashed row already held. Reviving
+    // the row where it lies would leave the node inside a page nobody is
+    // looking at, and the day behind this would land there with it.
+    tree.apply(&[TreeMutation::upsert(NoteNode::child(
+        journals.clone(),
+        id("page"),
+        1_024,
+        "My days",
+    ))])
+    .unwrap();
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("day"),
+            parent_id: journals.clone(),
+            position: Position::at_end(),
+            text: "2026-08-20".into(),
+        },
+    );
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::DeleteSubtree {
+            id: journals.clone(),
+        },
+    );
+
+    let patch = tree
+        .plan(NotesCommand::CreateNode {
+            id: journals.clone(),
+            parent_id: id("root"),
+            position: Position::at_end(),
+            text: "Journals".into(),
+        })
+        .expect("the row in the trash is taken back rather than refused");
+    tree.apply(&patch.forward).unwrap();
+
+    let node = tree.node(&journals).unwrap();
+    assert!(!node.is_deleted(), "the node the day needs is live again");
+    assert_eq!(node.parent_id(), Some(&id("root")));
+    assert_eq!(node.text(), "Journals");
+    assert!(
+        tree.node(&id("day")).unwrap().is_deleted(),
+        "a day in the trash was put there on purpose and is not part of this"
+    );
+
+    tree.apply(&patch.inverse).unwrap();
+    let node = tree.node(&journals).unwrap();
+    assert!(
+        node.is_deleted() && node.parent_id() == Some(&id("page")) && node.text() == "My days",
+        "undo hands back the row this took over, exactly as it was"
+    );
+}

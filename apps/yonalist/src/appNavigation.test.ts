@@ -1,6 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { capturePane, owningPageId, zoomEntryFocus } from "./appNavigation";
-import { ROOT_ID } from "./store/storeSupport";
+import { JOURNALS_ID, ROOT_ID } from "./store/storeSupport";
 import { registerOutlinePane } from "./outline/outlinePaneRegistry";
 
 function paneFixture(): string {
@@ -164,6 +164,26 @@ describe("owning page", () => {
     expect(owningPageId("bullet-2", [bullet, deeper])).toBeNull();
     expect(owningPageId("nobody", [page, bullet])).toBeNull();
     expect(owningPageId(null, [page])).toBeNull();
+  });
+
+  // A journal day hangs from the Journals node, not from the root, and it is
+  // still the page its rows are in.
+  const day = child("day-1", JOURNALS_ID, 1_024, "2026-08-20");
+  const entry = child("entry-1", "day-1", 1_024, "Standup");
+
+  it("stops at a journal day rather than the Journals node", () => {
+    const journals = child(JOURNALS_ID, ROOT_ID, 2_048, "Journals");
+
+    expect(owningPageId("entry-1", [page, journals, day, entry])).toBe("day-1");
+    expect(owningPageId("day-1", [page, journals, day, entry])).toBe("day-1");
+  });
+
+  // Sync can park the Journals node under a page. The day is still the page its
+  // rows are in, so the walk stops there rather than carrying on to that page.
+  it("stops at the day even when the Journals node sits under a page", () => {
+    const journals = child(JOURNALS_ID, "page-1", 2_048, "Journals");
+
+    expect(owningPageId("entry-1", [page, journals, day, entry])).toBe("day-1");
   });
 
   it("gives up rather than circling a row that is its own ancestor", () => {

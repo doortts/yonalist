@@ -66,6 +66,26 @@ import type { NotesState } from "../notesState";
 /** The one page every outline hangs from: Home, and the parent of every page. */
 export const ROOT_ID = "root";
 
+/**
+ * The page every journal day hangs from, so a year of days is one row on Home
+ * rather than a year of them. `Journals\0` in base64url: a block id is `root`
+ * or twelve base64url characters, and a file naming a parent that is neither is
+ * quarantined. Kept in step with `notes_core::JOURNALS_ID`, which the storage
+ * layer reads it as.
+ */
+export const JOURNALS_ID = "Sm91cm5hbHMA";
+
+/**
+ * Whether a row belongs in the page list: a live child of Home, or of the
+ * Journals node -- a day hangs from that one and is still the page its date
+ * names, which is what `findJournalPage`, the calendar, the feed and carry-over
+ * all read. The storage layer's `queries.rs::pages` is the same rule in SQL and
+ * has to stay the same answer; the tests on either side of the seam say so.
+ */
+export function isPageParent(parentId: string | null): boolean {
+  return parentId === ROOT_ID || parentId === JOURNALS_ID;
+}
+
 export const DRAFT_DEBOUNCE_MS = 300;
 /**
  * How long an uncommitted typing run may postpone SQLite. The debounce alone

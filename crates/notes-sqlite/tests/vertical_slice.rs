@@ -772,3 +772,131 @@ fn proposed_ids_never_overwrite_existing_nodes() {
         );
     }
 }
+
+/// The whole path the `node already exists: Sm91cm5hbHMA` banner lived on: the
+/// window asks for the Journals node whenever its page list has no row for it,
+/// and the page list holds live children of root and of the Journals node
+/// alone. So a node dragged into a page, or thrown away, is one the window
+/// cannot see and keeps asking for -- and the planning slice, which carries
+/// trashed rows too, refused every ask.
+///
+/// Both scenarios are the real command path end to end, because the collision
+/// was never in the tree alone: it takes `collect_command_context` loading the
+/// row that collides and the patch committing over it to say the day landed.
+#[test]
+fn a_journal_day_lands_wherever_the_journals_node_has_got_to() {
+    let journals = notes_core::JOURNALS_ID;
+    for (scenario, day) in [
+        ("dragged into a page", "day-dragged"),
+        ("thrown away", "day-trashed"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = SqliteStorage::open(&directory.path().join("notes-v2.sqlite")).unwrap();
+        let service = NotesService::new(&storage, "session", 0);
+        service
+            .execute(command(
+                "page",
+                0,
+                IpcNotesCommand::CreateNode {
+                    id: "page".into(),
+                    parent_id: "root".into(),
+                    before_id: None,
+                    text: "Inbox".into(),
+                },
+            ))
+            .unwrap();
+        service
+            .execute(command(
+                "journals",
+                1,
+                IpcNotesCommand::CreateNode {
+                    id: journals.into(),
+                    parent_id: "root".into(),
+                    before_id: None,
+                    text: "Journals".into(),
+                },
+            ))
+            .unwrap();
+        // What takes the node out of the window's sight, and what the reported
+        // database had each been through.
+        let taken_away = if scenario == "dragged into a page" {
+            IpcNotesCommand::MoveNodes {
+                moves: vec![IpcNodeMove {
+                    id: journals.into(),
+                    parent_id: "page".into(),
+                    before_id: None,
+                }],
+            }
+        } else {
+            IpcNotesCommand::DeleteSubtree {
+                id: journals.into(),
+            }
+        };
+        service
+            .execute(command("taken-away", 2, taken_away))
+            .unwrap();
+        assert!(
+            !storage
+                .pages()
+                .unwrap()
+                .iter()
+                .any(|page| page.id == journals),
+            "{scenario}: the page list is what the window consults, and it has no row now"
+        );
+
+        // The two commands a first day write sends, in the order the queue
+        // hands them over.
+        service
+            .execute(command(
+                "journals-again",
+                3,
+                IpcNotesCommand::CreateNode {
+                    id: journals.into(),
+                    parent_id: "root".into(),
+                    before_id: None,
+                    text: "Journals".into(),
+                },
+            ))
+            .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
+        service
+            .execute(command(
+                "day",
+                // Four either way: a creation the node already there answers
+                // writes nothing and still takes a revision, which is the
+                // number the day after it has to be sent against.
+                4,
+                IpcNotesCommand::CreateNode {
+                    id: day.into(),
+                    parent_id: journals.into(),
+                    before_id: None,
+                    text: "2026-08-21".into(),
+                },
+            ))
+            .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
+
+        let node = storage.node(day).unwrap().unwrap();
+        assert_eq!(
+            node.parent_id(),
+            Some(&NodeId::try_from(journals).unwrap()),
+            "{scenario}: the day hangs from the Journals node"
+        );
+        assert!(
+            storage.pages().unwrap().iter().any(|page| page.id == day),
+            "{scenario}: a day is a page wherever the node it hangs from sits, \
+             which is what Today, the calendar and the feed read"
+        );
+        let node = storage.node(journals).unwrap().unwrap();
+        assert!(!node.is_deleted(), "{scenario}: the day's parent is live");
+        let expected_parent = if scenario == "dragged into a page" {
+            "page"
+        } else {
+            "root"
+        };
+        assert_eq!(
+            node.parent_id(),
+            Some(&NodeId::try_from(expected_parent).unwrap()),
+            "{scenario}: a live node stays where the user dragged it; a thrown \
+             away one comes back where the command asks for it"
+        );
+    }
+}

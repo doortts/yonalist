@@ -48,22 +48,62 @@ fn anchor_sql() -> String {
     )
 }
 
-/// A page is a live child of the root and nothing else, which is why this
-/// asks the parent index rather than reading the root's window: that window
-/// carries the whole forest depth first and stops at a row limit, so a page
-/// with enough children of its own would push the pages after it out of the
-/// answer.
+/// The page a hit sits in: the nearest ancestor -- the hit's own row included
+/// -- whose parent the page rule below names. Only the parent half of that rule
+/// is asked here: trash flags a branch's root and leaves its rows live, so a
+/// hit under a trashed page still names it, the way it always has. A journal day
+/// hangs from the Journals node, so two ancestors of a row inside a day qualify
+/// and only the nearer one is the page it is in; without the depth the answer
+/// would ride on the order a recursive CTE happens to emit its rows in.
+///
+/// The two ids are written into the text rather than bound, so the one fragment
+/// serves both callers: `search` and `filtered_search` number their parameters
+/// differently, and a bound id would force a copy of this rule per caller.
+fn page_id_sql() -> String {
+    format!(
+        "(
+            WITH RECURSIVE ancestors(id, parent_id, depth) AS (
+                SELECT node.id, node.parent_id, 0
+                UNION ALL
+                SELECT parent.id, parent.parent_id, child.depth + 1
+                FROM notes_nodes parent
+                JOIN ancestors child ON child.parent_id = parent.id
+            )
+            SELECT id FROM ancestors
+            WHERE parent_id IN ('{ROOT_ID}', '{journals}')
+            ORDER BY depth
+            LIMIT 1
+         )",
+        journals = notes_core::JOURNALS_ID
+    )
+}
+
+/// A page is a live child of the root, or of the Journals node -- a journal day
+/// hangs from that rather than from the root, and it is still the page its date
+/// names. This asks the parent index rather than reading the root's window:
+/// that window carries the whole forest depth first and stops at a row limit,
+/// so a page with enough children of its own would push the pages after it out
+/// of the answer.
+///
+/// This parent set is copied, not shared: the window answers the same question
+/// of a receipt rather than of SQLite (`storeSupport.ts::isPageParent`), search
+/// asks which page a row is *in* (`page_id_sql` above), and the vault export
+/// writes the pair into several statements of its own. `grep Sm91cm5hbHMA` is
+/// what finds them -- no list here stays exhaustive. A new page rule lands here
+/// first, then go and widen every copy the grep turns up, or the list the window
+/// keeps and the list a restart reads stop agreeing, and a row of the new kind
+/// is filed under the wrong page.
 pub(crate) fn pages(connection: &Connection) -> Result<Vec<PageSummary>, StorageError> {
     let mut statement = connection
         .prepare(
             "SELECT id, text, sort_key
              FROM notes_nodes
-             WHERE parent_id = ?1 AND deleted = 0
+             WHERE parent_id IN (?1, ?2) AND deleted = 0
              ORDER BY sort_key, id",
         )
         .map_err(internal)?;
     let pages = statement
-        .query_map([ROOT_ID], |row| {
+        .query_map([ROOT_ID, notes_core::JOURNALS_ID], |row| {
             Ok(PageSummary {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -210,14 +250,14 @@ pub(crate) fn search(
     let normalized = text.to_ascii_lowercase();
     let filter = if normalized == "is:starred" {
         Some((
-            "node.starred = ?4 AND node.deleted = 0",
+            "node.starred = ?3 AND node.deleted = 0",
             vec![Value::Integer(1)],
         ))
     } else if normalized == "is:trash" {
-        Some(("node.deleted = ?4", vec![Value::Integer(1)]))
+        Some(("node.deleted = ?3", vec![Value::Integer(1)]))
     } else if normalized == "is:tagged" {
         Some((
-            "?4 = 1 AND EXISTS (
+            "?3 = 1 AND EXISTS (
                 SELECT 1 FROM notes_tags WHERE notes_tags.node_id = node.id
              ) AND node.deleted = 0",
             vec![Value::Integer(1)],
@@ -226,7 +266,7 @@ pub(crate) fn search(
         Some((
             "EXISTS (
                 SELECT 1 FROM notes_tags
-                WHERE notes_tags.node_id = node.id AND notes_tags.token = ?4
+                WHERE notes_tags.node_id = node.id AND notes_tags.token = ?3
              ) AND node.deleted = 0",
             vec![Value::Text(tag.to_lowercase())],
         ))
@@ -235,7 +275,7 @@ pub(crate) fn search(
             "EXISTS (
                 SELECT 1 FROM notes_dates
                 WHERE notes_dates.node_id = node.id
-                  AND notes_dates.date_key BETWEEN ?4 AND ?5
+                  AND notes_dates.date_key BETWEEN ?3 AND ?4
              ) AND node.deleted = 0",
             vec![Value::Text(from), Value::Text(to)],
         ))
@@ -246,7 +286,7 @@ pub(crate) fn search(
                 (
                     "EXISTS (
                         SELECT 1 FROM notes_dates
-                        WHERE notes_dates.node_id = node.id AND notes_dates.date_key = ?4
+                        WHERE notes_dates.node_id = node.id AND notes_dates.date_key = ?3
                      ) AND node.deleted = 0",
                     vec![Value::Text(date.to_owned())],
                 )
@@ -264,26 +304,19 @@ pub(crate) fn search(
         );
     }
     let expression = format!("\"{}\"", text.replace('"', "\"\""));
+    let page_id = page_id_sql();
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT node.*,
-                    (
-                        WITH RECURSIVE ancestors(id, parent_id) AS (
-                            SELECT node.id, node.parent_id
-                            UNION ALL
-                            SELECT parent.id, parent.parent_id
-                            FROM notes_nodes parent
-                            JOIN ancestors child ON child.parent_id = parent.id
-                        )
-                        SELECT id FROM ancestors WHERE parent_id = ?4 LIMIT 1
-                    ) AS page_id,
+                    {page_id} AS page_id,
                     snippet(notes_fts, -1, '', '', '…', 12)
              FROM notes_fts
              JOIN notes_node_records node ON node.id = notes_fts.node_id
-             WHERE notes_fts MATCH ?1 AND node.deleted = 0 AND node.id <> ?4
+             WHERE notes_fts MATCH ?1 AND node.deleted = 0
+               AND node.id <> '{ROOT_ID}'
              ORDER BY rank, node.id
-             LIMIT ?2 OFFSET ?3",
-        )
+             LIMIT ?2 OFFSET ?3"
+        ))
         .map_err(internal)?;
     let rows = statement
         .query_map(
@@ -292,8 +325,7 @@ pub(crate) fn search(
                 i64::from(request.limit.clamp(1, MAX_SEARCH_LIMIT)) + 1,
                 i64::try_from(offset).map_err(|_| {
                     StorageError::Internal("search offset exceeded SQLite INTEGER".into())
-                })?,
-                ROOT_ID
+                })?
             ],
             |row| {
                 Ok(SearchHit {
@@ -344,24 +376,16 @@ fn filtered_search(
     limit: usize,
     requested_limit: u32,
 ) -> Result<SearchPage, StorageError> {
+    let page_id = page_id_sql();
     let sql = format!(
         "SELECT node.*,
-                (
-                    WITH RECURSIVE ancestors(id, parent_id) AS (
-                        SELECT node.id, node.parent_id
-                        UNION ALL
-                        SELECT parent.id, parent.parent_id
-                        FROM notes_nodes parent
-                        JOIN ancestors child ON child.parent_id = parent.id
-                    )
-                    SELECT id FROM ancestors WHERE parent_id = ?3 LIMIT 1
-                ) AS page_id,
+                {page_id} AS page_id,
                 CASE
                     WHEN node.note = '' THEN node.text
                     ELSE node.text || ' ' || node.note
                 END
          FROM notes_node_records node
-         WHERE ({clause}) AND node.id <> ?3
+         WHERE ({clause}) AND node.id <> '{ROOT_ID}'
          ORDER BY node.sort_key, node.id
          LIMIT ?1 OFFSET ?2"
     );
@@ -372,7 +396,6 @@ fn filtered_search(
             Value::Integer(i64::try_from(offset).map_err(|_| {
                 StorageError::Internal("search offset exceeded SQLite INTEGER".into())
             })?),
-            Value::Text(ROOT_ID.to_owned()),
         ];
     binds.extend(values);
     let rows = statement
@@ -630,5 +653,65 @@ mod tests {
             active_page(&connection).expect("ui state").as_deref(),
             Some(ROOT_ID)
         );
+    }
+
+    /// A hit inside a journal day belongs to the day. The day hangs from the
+    /// Journals node rather than from the root, so the walk has to stop at the
+    /// nearest page rather than the first root child above it -- and it has to
+    /// stop there however deep the Journals node itself has been carried.
+    #[test]
+    fn search_names_the_journal_day_as_the_hits_page() {
+        for journals_parent in [ROOT_ID, "office"] {
+            let mut connection = open();
+            if journals_parent != ROOT_ID {
+                insert_child(&mut connection, journals_parent, ROOT_ID, 1_024);
+            }
+            insert_child(
+                &mut connection,
+                notes_core::JOURNALS_ID,
+                journals_parent,
+                2_048,
+            );
+            insert_child(
+                &mut connection,
+                "2026-08-20",
+                notes_core::JOURNALS_ID,
+                1_024,
+            );
+            insert_child(&mut connection, "standup", "2026-08-20", 1_024);
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET starred = 1 WHERE id = 'standup'",
+                    [],
+                )
+                .expect("star");
+
+            // The word, the day's own title, and the filtered path, which is a
+            // second copy of the same question.
+            for (query, row) in [
+                ("standup", "standup"),
+                ("2026-08-20", "2026-08-20"),
+                ("is:starred", "standup"),
+            ] {
+                let hit = search(
+                    &connection,
+                    SearchQuery {
+                        text: query.into(),
+                        cursor: None,
+                        limit: 20,
+                    },
+                )
+                .expect("search")
+                .hits
+                .into_iter()
+                .next()
+                .expect("hit");
+                // Which row answered matters: the day's own row answers with
+                // itself, so a query that drifted onto it would keep passing
+                // while the row inside it went wrong.
+                assert_eq!(hit.node.id, row, "{query} under {journals_parent}");
+                assert_eq!(hit.page_id, "2026-08-20", "{query} under {journals_parent}");
+            }
+        }
     }
 }

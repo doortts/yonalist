@@ -901,6 +901,54 @@ fn a_viewport_carries_the_page_node_the_body_listing_leaves_out() {
     assert_eq!(root.page_node.map(|node| node.id).as_deref(), Some("root"));
 }
 
+/// A journal day hangs from the Journals node, not from root, and the page list
+/// is what the calendar, Today, the feed and carry-over all read. A day missing
+/// from it is a day `findJournalPage` cannot find, so opening it writes a second
+/// page for the same date every time.
+#[test]
+fn the_page_list_holds_the_children_of_the_journals_node() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "Sm91cm5hbHMA", "Journals");
+    execute(
+        &service,
+        "day",
+        1,
+        IpcNotesCommand::CreateNode {
+            id: "day-00000001".into(),
+            parent_id: "Sm91cm5hbHMA".into(),
+            before_id: None,
+            text: "2026-08-21".into(),
+        },
+    );
+    execute(
+        &service,
+        "row",
+        2,
+        IpcNotesCommand::CreateNode {
+            id: "row-00000001".into(),
+            parent_id: "day-00000001".into(),
+            before_id: None,
+            text: "Pharmacy".into(),
+        },
+    );
+
+    let pages = storage.pages().unwrap();
+
+    let ids = pages
+        .iter()
+        .map(|page| page.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        ids.contains(&"day-00000001"),
+        "the day is a page wherever it hangs from: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"row-00000001"),
+        "a row inside a day is not a page: {ids:?}"
+    );
+}
+
 #[test]
 fn the_page_list_is_every_live_root_child_however_deep_the_first_page_runs() {
     // The page list used to be read off the root's viewport window, which

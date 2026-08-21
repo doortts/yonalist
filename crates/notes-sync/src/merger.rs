@@ -744,7 +744,7 @@ fn place_missing_parent(
     }
     let mut cached = None;
     let page = recovery_page(transaction, clock, &mut cached)?;
-    transaction
+    let inserted = transaction
         .prepare_cached(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
              VALUES (?1, ?2, ?3, 'bullet', '', '')
@@ -758,6 +758,13 @@ fn place_missing_parent(
             ])
         })
         .map_err(|error| error.to_string())?;
+    // Everything below is only for a row this statement made. The row that gets
+    // here already made is the recovery page itself, made a line above by a
+    // document that names it as its parent — and taking its mark would drop the
+    // file that states it.
+    if inserted == 0 {
+        return Ok(());
+    }
     // The insert trigger stamps anything without a reading, and a stamped
     // stand-in would outrank the document it is waiting for.
     transaction

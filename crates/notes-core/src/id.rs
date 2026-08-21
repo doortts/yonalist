@@ -18,6 +18,18 @@ const YID_BYTES: usize = 9;
 /// before anything has been created, so it cannot be given a random name.
 pub const HOME_ID: &str = "root";
 
+/// The node every journal day hangs from. `Journals\0` in base64url, which is
+/// what makes it a `yid` rather than a readable name: a file stating a parent
+/// that is not one is quarantined, so `yonalist-journals` could never be a node
+/// id the vault carries.
+///
+/// The same twelve characters in every vault, unlike the recovery page's
+/// per-vault derivation. Two devices have to land on the same id -- a day
+/// arriving from one names a parent the other already agrees on -- and this id
+/// is also a literal in the storage layer's SQL and a constant in the frontend,
+/// neither of which could be handed a value read from the vault.
+pub const JOURNALS_ID: &str = "Sm91cm5hbHMA";
+
 pub fn new_yid() -> String {
     let mut bytes = [0u8; YID_BYTES];
     getrandom::fill(&mut bytes).expect("the OS random source");
